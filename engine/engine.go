@@ -2,8 +2,8 @@ package engine
 
 import (
 	"fmt"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/engine/handler"
+	"github.com/FuzzyKosmow/golang-runspec"
+	"github.com/FuzzyKosmow/golang-runspec/engine/handler"
 )
 
 // NodeHandler is the function signature for node type handlers.

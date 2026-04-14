@@ -42,16 +42,16 @@ runner/rest/                     REST runner (vendor-agnostic, transport config)
 ## Install
 
 ```
-go get git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package@latest
+go get github.com/FuzzyKosmow/golang-runspec@latest
 ```
 
 ## Quick start
 
 ```go
 import (
-    planrunner "git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
-    "git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/orchestrator"
-    "git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/runner/snmp"
+    planrunner "github.com/FuzzyKosmow/golang-runspec"
+    "github.com/FuzzyKosmow/golang-runspec/orchestrator"
+    "github.com/FuzzyKosmow/golang-runspec/runner/snmp"
 )
 
 // 1. Load a plan (from n8n JSON, database, or hand-constructed).

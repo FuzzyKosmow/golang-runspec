@@ -2,7 +2,7 @@ package handler
 
 import (
 	"fmt"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
+	"github.com/FuzzyKosmow/golang-runspec"
 	"strconv"
 	"strings"
 

@@ -3,7 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
+	"github.com/FuzzyKosmow/golang-runspec"
 )
 
 // HandleSet assigns values to context variables.

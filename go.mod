@@ -1,4 +1,4 @@
-module git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package
+module github.com/FuzzyKosmow/golang-runspec
 
 go 1.24.0
 

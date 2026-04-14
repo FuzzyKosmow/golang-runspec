@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	n8n "git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/parser/n8n"
+	n8n "github.com/FuzzyKosmow/golang-runspec/parser/n8n"
 )
 
 // allJSONPath resolves the path relative to the repo root.

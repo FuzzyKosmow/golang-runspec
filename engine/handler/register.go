@@ -1,6 +1,6 @@
 package handler
 
-import "git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
+import "github.com/FuzzyKosmow/golang-runspec"
 
 // HandlerFunc is the function signature for node handlers.
 type HandlerFunc func(node maestro.Node, state *maestro.ExecutionState) (*maestro.ExecutionResult, error)

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/engine"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/orchestrator"
+	"github.com/FuzzyKosmow/golang-runspec"
+	"github.com/FuzzyKosmow/golang-runspec/engine"
+	"github.com/FuzzyKosmow/golang-runspec/orchestrator"
 
 	"go.opentelemetry.io/otel/trace"
 )

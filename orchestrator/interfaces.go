@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
+	"github.com/FuzzyKosmow/golang-runspec"
 )
 
 // PlanProvider fetches execution plans. Implementations may read from MongoDB, filesystem, cache, etc.

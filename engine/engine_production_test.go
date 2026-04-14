@@ -5,8 +5,8 @@ package engine_test
 
 import (
 	"encoding/json"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package"
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/parser/n8n"
+	"github.com/FuzzyKosmow/golang-runspec"
+	"github.com/FuzzyKosmow/golang-runspec/parser/n8n"
 	"os"
 	"path/filepath"
 	"testing"

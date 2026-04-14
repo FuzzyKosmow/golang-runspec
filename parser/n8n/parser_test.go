@@ -1,7 +1,7 @@
 package n8n_test
 
 import (
-	"git.fpt.net/isc/thong-so-l2-l3/infra-metrics/packages/golang-plan-runner-package/parser/n8n"
+	"github.com/FuzzyKosmow/golang-runspec/parser/n8n"
 	"os"
 	"testing"
 )
