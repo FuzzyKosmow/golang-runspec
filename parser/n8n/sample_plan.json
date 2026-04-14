@@ -1,0 +1,323 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "fields": {
+          "field": [
+            {
+              "name": "slotID",
+              "type": "number",
+              "example": "1"
+            },
+            {
+              "name": "portID",
+              "type": "number",
+              "example": "2"
+            },
+            {
+              "name": "onuID",
+              "type": "number",
+              "example": "3"
+            }
+          ]
+        }
+      },
+      "id": "f85e1829-2357-4bf7-961a-12ea13b38805",
+      "name": "Start: RX Inputs",
+      "type": "CUSTOM.dslInputDef",
+      "typeVersion": 1,
+      "position": [-432, 416]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "value1": "={{ $json.slotID }}",
+              "operation": "equal",
+              "value2": "1"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8e5098ad-935d-412d-a1ad-a3b2fd0c2452",
+      "name": "If Slot == 1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-176, 416]
+    },
+    {
+      "parameters": {
+        "value": "={{ $json.portID }}",
+        "targetField": "ifindex",
+        "rules": {
+          "rule": [
+            {
+              "key": "1",
+              "output": ".285278465"
+            },
+            {
+              "key": "2",
+              "output": ".285278466"
+            },
+            {
+              "key": "3",
+              "output": ".285278467"
+            },
+            {
+              "key": "4",
+              "output": ".285278468"
+            },
+            {
+              "key": "5",
+              "output": ".285278469"
+            },
+            {
+              "key": "6",
+              "output": ".285278470"
+            },
+            {
+              "key": "7",
+              "output": ".285278471"
+            },
+            {
+              "key": "8",
+              "output": ".285278472"
+            },
+            {
+              "key": "9",
+              "output": ".285278473"
+            },
+            {
+              "key": "10",
+              "output": ".285278474"
+            },
+            {
+              "key": "11",
+              "output": ".285278475"
+            },
+            {
+              "key": "12",
+              "output": ".285278476"
+            },
+            {
+              "key": "13",
+              "output": ".285278477"
+            },
+            {
+              "key": "14",
+              "output": ".285278478"
+            },
+            {
+              "key": "15",
+              "output": ".285278479"
+            },
+            {
+              "key": "16",
+              "output": ".285278480"
+            }
+          ]
+        }
+      },
+      "id": "13910edf-3234-4fd6-89dc-ec914163b656",
+      "name": "Map IfIndex (Slot 1)",
+      "type": "CUSTOM.dslSwitchMap",
+      "typeVersion": 1,
+      "position": [80, 320]
+    },
+    {
+      "parameters": {
+        "value": "={{ $json.portID }}",
+        "targetField": "ifindex",
+        "rules": {
+          "rule": [
+            {
+              "key": "1",
+              "output": ".285278721"
+            },
+            {
+              "key": "2",
+              "output": ".285278722"
+            },
+            {
+              "key": "3",
+              "output": ".285278723"
+            },
+            {
+              "key": "4",
+              "output": ".285278724"
+            },
+            {
+              "key": "5",
+              "output": ".285278725"
+            },
+            {
+              "key": "6",
+              "output": ".285278726"
+            },
+            {
+              "key": "7",
+              "output": ".285278727"
+            },
+            {
+              "key": "8",
+              "output": ".285278728"
+            },
+            {
+              "key": "9",
+              "output": ".285278729"
+            },
+            {
+              "key": "10",
+              "output": ".285278730"
+            },
+            {
+              "key": "11",
+              "output": ".285278731"
+            },
+            {
+              "key": "12",
+              "output": ".285278732"
+            },
+            {
+              "key": "13",
+              "output": ".285278733"
+            },
+            {
+              "key": "14",
+              "output": ".285278734"
+            },
+            {
+              "key": "15",
+              "output": ".285278733"
+            },
+            {
+              "key": "16",
+              "output": ".285278734"
+            }
+          ]
+        }
+      },
+      "id": "132ea8b3-0c07-41e0-8afe-f4b6b7a75000",
+      "name": "Map IfIndex (Slot 2)",
+      "type": "CUSTOM.dslSwitchMap",
+      "typeVersion": 1,
+      "position": [80, 528]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "3767ec46-04a4-4947-abb9-fe3f70f07831",
+              "name": "finalOID",
+              "value": "=.1.3.6.1.4.1.3902.1082.500.20.2.2.2.1.10{{ $json.ifindex }}.{{ $json.onuID }}.1",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f2787b99-3069-43e6-b1bb-5fbbc7abcaa8",
+      "name": "Build Final OID",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [336, 416]
+    },
+    {
+      "parameters": {
+        "outputs": {
+          "output": [
+            {
+              "name": "oid",
+              "value": "={{ $json.finalOID }}"
+            }
+          ]
+        },
+        "enableChaining": true,
+        "nextWorkflowId": "D13_POWER_POST_PROC_ID"
+      },
+      "id": "9a33375f-9f0b-4c59-a148-201aad73b4b8",
+      "name": "End: Return OID",
+      "type": "CUSTOM.dslOutputDef",
+      "typeVersion": 1,
+      "position": [576, 416],
+      "credentials": {
+        "n8nApi": {
+          "id": "b8sC1owIBwtkK1hq",
+          "name": "n8n account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Start: RX Inputs": {
+      "main": [
+        [
+          {
+            "node": "If Slot == 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Slot == 1": {
+      "main": [
+        [
+          {
+            "node": "Map IfIndex (Slot 1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Map IfIndex (Slot 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map IfIndex (Slot 1)": {
+      "main": [
+        [
+          {
+            "node": "Build Final OID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map IfIndex (Slot 2)": {
+      "main": [
+        [
+          {
+            "node": "Build Final OID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final OID": {
+      "main": [
+        [
+          {
+            "node": "End: Return OID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7025427c21eb4da44d29e6259968f0d1de9326d21745028445e527e6664e4c9e"
+  }
+}

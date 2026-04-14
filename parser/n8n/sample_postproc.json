@@ -1,0 +1,94 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "fields": {
+          "field": [
+            {
+              "name": "snmp_value",
+              "type": "number",
+              "example": "2"
+            }
+          ]
+        }
+      },
+      "id": "7879a16f-1fbd-4c4f-ad69-2fd5e256579c",
+      "name": "Start: Raw Power Value",
+      "type": "CUSTOM.dslInputDef",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "435e7398-33e6-4e1d-a0c9-39e663e52214",
+              "name": "finalValue",
+              "value": "={{ $json.snmp_value > 32767 ? ((($json.snmp_value - 65536) * 0.002) - 30) : (($json.snmp_value * 0.002) - 30) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fe6e9b3f-cf40-4b2a-b1b2-47278c6fd22c",
+      "name": "Calculate Power (dBm)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [256, 0]
+    },
+    {
+      "parameters": {
+        "outputs": {
+          "output": [
+            {
+              "name": "value",
+              "value": "={{ $json.finalValue }}"
+            }
+          ]
+        }
+      },
+      "id": "85ab4fc9-2434-491b-a507-5a3849a62838",
+      "name": "End: Return dBm",
+      "type": "CUSTOM.dslOutputDef",
+      "typeVersion": 1,
+      "position": [512, 0],
+      "credentials": {
+        "n8nApi": {
+          "id": "b8sC1owIBwtkK1hq",
+          "name": "n8n account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Start: Raw Power Value": {
+      "main": [
+        [
+          {
+            "node": "Calculate Power (dBm)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Power (dBm)": {
+      "main": [
+        [
+          {
+            "node": "End: Return dBm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7025427c21eb4da44d29e6259968f0d1de9326d21745028445e527e6664e4c9e"
+  }
+}
