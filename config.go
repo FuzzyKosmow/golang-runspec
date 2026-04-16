@@ -90,8 +90,9 @@ type IfCondition struct {
 // OutputConfig for dslOutputDef
 type OutputConfig struct {
 	PlanType          string `json:"planType,omitempty"`
-	PrimaryFieldName  string `json:"primaryFieldName,omitempty"`     // e.g. "oid"
-	PrimaryFieldNameP string `json:"primaryFieldNamePost,omitempty"` // e.g. "value" (n8n uses separate field per plan type)
+	PrimaryFieldName  string `json:"primaryFieldName,omitempty"`     // e.g. "oid" (OID_GEN plans)
+	PrimaryFieldNameP string `json:"primaryFieldNamePost,omitempty"` // e.g. "value" (POST_PROCESSING plans)
+	PrimaryFieldNameR string `json:"primaryFieldNameRest,omitempty"` // e.g. "url" (REST_PROPERTY plans)
 	PrimaryValue      string `json:"primaryValue,omitempty"`         // expression for the primary output
 
 	Outputs struct {
@@ -110,6 +111,9 @@ func (c *OutputConfig) PrimaryOutputName() string {
 	}
 	if c.PrimaryFieldNameP != "" {
 		return c.PrimaryFieldNameP
+	}
+	if c.PrimaryFieldNameR != "" {
+		return c.PrimaryFieldNameR
 	}
 	return ""
 }

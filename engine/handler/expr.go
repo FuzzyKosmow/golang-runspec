@@ -106,11 +106,63 @@ func evalSimple(code string, state *maestro.ExecutionState) (any, error) {
 		return string(bytes), nil
 	}
 
+	// padStart(value, length, padChar) — zero-pad or left-pad a value to a minimum length.
+	// Replaces JavaScript's String(x).padStart(n, "0") for plan expressions.
+	fnPadStart := func(params ...any) (any, error) {
+		if len(params) < 2 {
+			return "", fmt.Errorf("padStart requires at least 2 args: (value, length[, padChar])")
+		}
+		s := ToString(params[0])
+		length := 0
+		switch v := params[1].(type) {
+		case int:
+			length = v
+		case float64:
+			length = int(v)
+		case int64:
+			length = int(v)
+		default:
+			return "", fmt.Errorf("padStart length must be a number, got %T", params[1])
+		}
+		pad := "0"
+		if len(params) >= 3 {
+			pad = ToString(params[2])
+		}
+		for len(s) < length {
+			s = pad + s
+		}
+		return s, nil
+	}
+
+	// sprintf(format, args...) — Go-style formatting for plan expressions.
+	fnSprintf := func(params ...any) (any, error) {
+		if len(params) == 0 {
+			return "", nil
+		}
+		format, ok := params[0].(string)
+		if !ok {
+			return "", fmt.Errorf("sprintf first arg must be format string")
+		}
+		return fmt.Sprintf(format, params[1:]...), nil
+	}
+
+	// toString(value) — explicit string conversion for plan expressions.
+	// Replaces JavaScript's String(x).
+	fnToString := func(params ...any) (any, error) {
+		if len(params) == 0 {
+			return "", nil
+		}
+		return ToString(params[0]), nil
+	}
+
 	env := map[string]any{
 		"$json":       state.Context,
 		"json":        state.Context,
 		"$":           fnNodeLookup,
 		"hexToString": fnHexToString,
+		"padStart":    fnPadStart,
+		"sprintf":     fnSprintf,
+		"toString":    fnToString,
 	}
 	for k, v := range state.Context {
 		env[k] = v
