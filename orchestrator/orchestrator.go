@@ -426,6 +426,20 @@ func (r *Orchestrator) Run(ctx context.Context, action string, scope int, keys [
 				tChain := time.Now()
 				for key, rawVal := range batchResults {
 					task := grp.tasks[key]
+
+					// Per-key partial-success: runners may surface individual
+					// key failures as error values in the result map while
+					// letting sibling keys succeed. Check that first.
+					if perKeyErr, ok := rawVal.(error); ok {
+						results[key] = Result{
+							Name: key, Status: StatusError,
+							Error: fmt.Sprintf("execution failed: %v", perKeyErr),
+							Logs: task.Logs, GuardResults: task.Guards,
+						}
+						span.AddEvent(fmt.Sprintf("  %s: FAILED — %s", key, truncate(perKeyErr.Error(), 60)))
+						continue
+					}
+
 					val := rawVal
 
 					if task.Plan.HasChains(action) {

@@ -86,7 +86,7 @@ func Parse(rawJSON []byte) (*maestro.Plan, error) {
 			ID:         id,
 			Name:       n.Name,
 			Type:       nodeType,
-			Parameters: n.Parameters,
+			Parameters: rewriteParametersJSON(n.Parameters),
 			Outputs:    make(map[string][]maestro.Connection),
 		}
 		plan.Nodes[id] = coreNode

@@ -13,9 +13,15 @@ import (
 	"testing"
 )
 
-// testPlanDir points to the shared test fixtures.
-// These are the same files used by the Node.js validator.
-const testPlanDir = "../../../../SampleExecutionPlan-StoredInMongo/tests/fixtures"
+// testPlanDir points to the shared test fixtures. Defaults to the
+// PARTIAL_VIEW_SETUP workspace location; override via GOLANG_RUNSPEC_FIXTURES
+// when the library is cloned standalone.
+var testPlanDir = func() string {
+	if env := os.Getenv("GOLANG_RUNSPEC_FIXTURES"); env != "" {
+		return env
+	}
+	return "../../data/tests/fixtures"
+}()
 
 // loadFixture loads a v2 plan fixture, extracts rawDefinition, and parses it.
 func loadFixture(t *testing.T, filename string) *maestro.Plan {
@@ -23,6 +29,9 @@ func loadFixture(t *testing.T, filename string) *maestro.Plan {
 	path := filepath.Join(testPlanDir, filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("fixture not available at %s — set GOLANG_RUNSPEC_FIXTURES to override", path)
+		}
 		t.Fatalf("Failed to read fixture %s: %v", filename, err)
 	}
 

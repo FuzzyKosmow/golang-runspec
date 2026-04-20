@@ -21,7 +21,15 @@ import (
 	"testing"
 )
 
-const allJSONPath = "../../../../SampleExecutionPlan-StoredInMongo/plans/all.json"
+// allJSONPath points at the PARTIAL_VIEW_SETUP workspace's canonical plan
+// dump. Override via GOLANG_RUNSPEC_PLANS for other layouts; tests skip if
+// absent so the repo remains standalone-cloneable.
+var allJSONPath = func() string {
+	if env := os.Getenv("GOLANG_RUNSPEC_PLANS"); env != "" {
+		return env
+	}
+	return "../../data/plans/all.json"
+}()
 
 // ============================================================
 // planDB — loads all.json as a mock MongoDB
@@ -37,6 +45,9 @@ func newPlanDB(t *testing.T) *planDB {
 	t.Helper()
 	data, err := os.ReadFile(allJSONPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("all.json not available at %s — set GOLANG_RUNSPEC_PLANS to override", allJSONPath)
+		}
 		t.Fatalf("Failed to read all.json: %v", err)
 	}
 

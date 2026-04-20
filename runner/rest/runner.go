@@ -147,6 +147,9 @@ type Runner struct {
 //   - httpClient: stdlib HTTP client (shared, no vendor-specific config)
 //   - plans: PlanProvider for lazy-loading transport configs from same MongoDB collection.
 //     Can be nil during tests — runner will fail on first REST call if transport is needed.
+//
+// Outgoing URLs are traced via OTel span attributes + events so operators can
+// reproduce production failures from trace data without inflating app logs.
 func NewRunner(httpClient *http.Client, plans orchestrator.PlanProvider) *Runner {
 	eng := engine.New()
 	eng.RegisterStandardHandlers()
@@ -182,6 +185,8 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 	results := make(map[string]any)
 
 	// Phase 1: Execute plan graphs to get URL path + field info for each key.
+	// Per-key failures here become error values in results (partial-success
+	// semantics) so the rest of the batch can still proceed.
 	type restTarget struct {
 		URLPath       string
 		ResponseField string
@@ -196,14 +201,17 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 			state := maestro.NewState(inputs)
 			result, err := r.eng.Execute(plan, state)
 			if err != nil {
-				return nil, fmt.Errorf("rest plan %s: %w", key, err)
+				results[key] = fmt.Errorf("rest plan %s: %w", key, err)
+				continue
 			}
 			if result.Status != maestro.StatusCompleted {
-				return nil, fmt.Errorf("rest plan %s did not complete (status: %s)", key, result.Status)
+				results[key] = fmt.Errorf("rest plan %s did not complete (status: %s)", key, result.Status)
+				continue
 			}
 			urlPath, responseField, transform, err := extractRESTParams(result.PrimitiveValue)
 			if err != nil {
-				return nil, fmt.Errorf("rest params %s: %w", key, err)
+				results[key] = fmt.Errorf("rest params %s: %w", key, err)
+				continue
 			}
 			cfg := decodePlanConfig(plan)
 			targets[key] = restTarget{
@@ -221,14 +229,18 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 	}
 
 	// Phase 2: Load transport config (once per transport name in this batch).
+	// Transport load failures are per-transport: every key that needed that
+	// transport gets flagged; other transports can still succeed.
 	transportConfigs := make(map[string]*TransportConfig)
+	transportLoadErrs := make(map[string]error)
 	for _, t := range targets {
-		if t.Transport == "" || transportConfigs[t.Transport] != nil {
+		if t.Transport == "" || transportConfigs[t.Transport] != nil || transportLoadErrs[t.Transport] != nil {
 			continue
 		}
 		tc, err := r.loadTransport(ctx, scope, t.Transport)
 		if err != nil {
-			return nil, fmt.Errorf("transport %q: %w", t.Transport, err)
+			transportLoadErrs[t.Transport] = err
+			continue
 		}
 		transportConfigs[t.Transport] = tc
 	}
@@ -244,9 +256,14 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 	resolved := make(map[string]resolvedTarget)
 
 	for key, t := range targets {
+		if loadErr, bad := transportLoadErrs[t.Transport]; bad {
+			results[key] = fmt.Errorf("transport %q: %w", t.Transport, loadErr)
+			continue
+		}
 		tc := transportConfigs[t.Transport]
 		if tc == nil {
-			return nil, fmt.Errorf("no transport config for %q (plan %s)", t.Transport, key)
+			results[key] = fmt.Errorf("no transport config for %q (plan %s)", t.Transport, key)
+			continue
 		}
 		primary, _ := tc.resolveServer(parent)
 		fullURL := primary + t.URLPath
@@ -301,16 +318,24 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 			}
 		}
 
-		// Extract fields from cached responses
+		// Extract fields from cached responses. Per-URL HTTP failures and
+		// per-key missing-field conditions become error values in results —
+		// the batch still returns nil so other keys can succeed.
 		for key, rt := range resolved {
 			cached := urlCache[rt.FullURL]
 			if cached.err != nil {
-				return nil, fmt.Errorf("rest get %s: %w", key, cached.err)
+				results[key] = fmt.Errorf("rest get %s: %w", key, cached.err)
+				span.AddEvent(fmt.Sprintf("  %s: HTTP failed — %v", key, cached.err))
+				continue
 			}
 			val, ok := cached.body[rt.ResponseField]
 			if !ok {
-				results[key] = nil
-				span.AddEvent(fmt.Sprintf("  %s: field %q not in response", key, rt.ResponseField))
+				available := make([]string, 0, len(cached.body))
+				for k := range cached.body {
+					available = append(available, k)
+				}
+				results[key] = fmt.Errorf("response field %q not found in response (available: %v)", rt.ResponseField, available)
+				span.AddEvent(fmt.Sprintf("  %s: field %q not in response (keys: %v)", key, rt.ResponseField, available))
 				continue
 			}
 			results[key] = applyTransform(val, rt.Transform)
@@ -464,9 +489,18 @@ func (r *Runner) loadTransport(ctx context.Context, scope int, transportName str
 }
 
 // doHTTPGet performs a single HTTP GET with headers from transport config.
+//
+// The outgoing URL is set as a span attribute BEFORE dispatching so traces
+// always carry the full URL even when the request errors out. Errors attach a
+// body snippet as an event so operators can reproduce from trace data without
+// inflating application logs with every request.
 func (r *Runner) doHTTPGet(ctx context.Context, span trace.Span, url string, tc *TransportConfig) (map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, tc.timeoutDuration())
 	defer cancel()
+
+	// Set URL on the span up front so every failure mode carries it.
+	span.SetAttributes(attribute.String("http.url", url))
+	span.AddEvent("rest.get", trace.WithAttributes(attribute.String("http.url", url)))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -490,10 +524,7 @@ func (r *Runner) doHTTPGet(ctx context.Context, span trace.Span, url string, tc 
 	}
 	defer resp.Body.Close()
 
-	span.SetAttributes(
-		attribute.Int("http.status_code", resp.StatusCode),
-		attribute.String("http.url", url),
-	)
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -516,6 +547,11 @@ func (r *Runner) doHTTPGet(ctx context.Context, span trace.Span, url string, tc 
 		span.RecordError(err)
 		return nil, fmt.Errorf("rest: failed to decode JSON: %w, body: %.512s", err, string(body))
 	}
+
+	span.AddEvent("rest.ok", trace.WithAttributes(
+		attribute.Int("http.status_code", resp.StatusCode),
+		attribute.Int64("http.duration_ms", duration.Milliseconds()),
+	))
 
 	return result, nil
 }

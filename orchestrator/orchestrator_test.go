@@ -147,12 +147,23 @@ func (m *mockGate) GetAllowed(_ context.Context, dt int) (map[string]bool, error
 // Test helpers
 // ============================================================
 
-const fixtureDir = "../../../../SampleExecutionPlan-StoredInMongo/tests/fixtures"
+// fixtureDir points at the PARTIAL_VIEW_SETUP workspace's fixtures. Override
+// with GOLANG_RUNSPEC_FIXTURES for other layouts; tests skip if absent.
+var fixtureDir = func() string {
+	if env := os.Getenv("GOLANG_RUNSPEC_FIXTURES"); env != "" {
+		return env
+	}
+	return "../../data/tests/fixtures"
+}()
 
 func loadPlan(t *testing.T, filename string) *maestro.Plan {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(fixtureDir, filename))
+	path := filepath.Join(fixtureDir, filename)
+	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("fixture not available at %s — set GOLANG_RUNSPEC_FIXTURES to override", path)
+		}
 		t.Fatalf("read %s: %v", filename, err)
 	}
 
