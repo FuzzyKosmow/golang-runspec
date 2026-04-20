@@ -154,8 +154,10 @@ func TestAllJSONPlans(t *testing.T) {
 		// --- 7. Additional structural checks ---
 		validDocTypes := map[string]bool{
 			"OID_GEN":          true,
-			"POST_PROCESSING":  true,
+			"POST_PROCESSING":  true, // legacy generic (pre-v0.1.4, still accepted)
 			"POST_PROC":        true,
+			"POST_PROC_SNMP":   true, // SNMP-owned (v0.1.4+)
+			"POST_PROC_REST":   true, // REST-owned (v0.1.4+)
 			"REST_PROPERTY":    true,
 			"TRANSPORT_CONFIG": true,
 		}

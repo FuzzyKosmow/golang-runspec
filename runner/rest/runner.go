@@ -35,6 +35,12 @@ const (
 	// the same collection as plans. The runner loads it by name to resolve server URLs,
 	// auth headers, and other transport infrastructure. Managed by admin UI, not n8n.
 	PlanTypeTransportConfig = "TRANSPORT_CONFIG"
+
+	// PlanTypePOSTProcessingREST is the REST-specific post-processing plan type.
+	// Chain input from the parent REST_PROPERTY plan is injected under "rest_value".
+	// Added in v0.1.4 so REST post-processing doesn't collide with SNMP's snmp_value
+	// convention — each runner owns its own post-processing type + input key.
+	PlanTypePOSTProcessingREST = "POST_PROC_REST"
 )
 
 // TransportConfig is decoded from a TRANSPORT_CONFIG plan document's config field.
@@ -378,6 +384,13 @@ func (r *Runner) Contract() *orchestrator.RunnerContract {
 			PlanTypeTransportConfig: {
 				DefaultAction:   "",
 				RequiredOutputs: nil,
+			},
+			PlanTypePOSTProcessingREST: {
+				DefaultAction: "EXECUTE",
+				ContextInputs: []orchestrator.ContractInput{
+					{Key: "rest_value", Type: "any", Required: true, Description: "Raw REST response value, injected by orchestrator from parent REST_PROPERTY plan"},
+				},
+				RequiredOutputs: []string{"value"},
 			},
 		},
 	}

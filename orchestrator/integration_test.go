@@ -240,8 +240,8 @@ func (r *trackingRunner) Contract() *orchestrator.RunnerContract {
 		Name:           "snmp",
 		AllowedActions: []string{"GET", "SET", "WALK"},
 		PlanIO: map[string]orchestrator.PlanTypeIO{
-			"OID_GEN":         {DefaultAction: "GET"},
-			"POST_PROCESSING": {DefaultAction: "EXECUTE", ContextInputs: []orchestrator.ContractInput{{Key: "snmp_value"}}},
+			"OID_GEN":        {DefaultAction: "GET"},
+			"POST_PROC_SNMP": {DefaultAction: "EXECUTE", ContextInputs: []orchestrator.ContractInput{{Key: "snmp_value"}}},
 		},
 	}
 }

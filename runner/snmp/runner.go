@@ -23,6 +23,19 @@ const (
 	ActionWALK = "WALK" // SNMP WALK — enumerate an OID subtree
 )
 
+// Plan types claimed by this runner.
+const (
+	// PlanTypeOIDGen is the primary SNMP plan type (graph → OID → SNMP fetch).
+	PlanTypeOIDGen = "OID_GEN"
+
+	// PlanTypePOSTProcessing is the SNMP-specific post-processing plan type.
+	// Chain input from the parent OID_GEN plan is injected under "snmp_value".
+	// Renamed from "POST_PROCESSING" in v0.1.4 so each runner owns its own
+	// post-processing type; legacy "POST_PROCESSING" plans remain functional
+	// but fall through to the orchestrator default "result" key.
+	PlanTypePOSTProcessing = "POST_PROC_SNMP"
+)
+
 // planConfig is decoded from plan.Config to extract SNMP-specific fields.
 type planConfig struct {
 	DeviceType  int    `json:"deviceType"`
@@ -41,7 +54,7 @@ func decodePlanConfig(plan *maestro.Plan) planConfig {
 
 // Runner implements orchestrator.Runner for SNMP-based plan execution.
 // For OID_GEN plans: execute plan → extract OID → SNMP fetch → raw value.
-// For other plans (LOGIC, POST_PROCESSING): execute directly via engine.
+// For other plans (LOGIC, POST_PROC_SNMP): execute directly via engine.
 //
 // Shared by any service that needs SNMP: scan API, RX updater, bulk scanner.
 type Runner struct {
@@ -60,7 +73,7 @@ func (r *Runner) Run(ctx context.Context, plan *maestro.Plan, action string, sco
 	span := trace.SpanFromContext(ctx)
 
 	switch plan.Type {
-	case "OID_GEN":
+	case PlanTypeOIDGen:
 		state := maestro.NewState(inputs)
 		result, err := r.eng.Execute(plan, state)
 		if err != nil {
@@ -124,7 +137,7 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 	var nonOIDKeys []string
 
 	for key, plan := range plans {
-		if plan.Type == "OID_GEN" {
+		if plan.Type == PlanTypeOIDGen {
 			state := maestro.NewState(inputs)
 			result, err := r.eng.Execute(plan, state)
 			if err != nil {
@@ -196,12 +209,12 @@ func (r *Runner) Contract() *orchestrator.RunnerContract {
 			{Key: "onuID", Type: "number", Required: false, Description: "ONU ID (null-safe)"},
 		},
 		PlanIO: map[string]orchestrator.PlanTypeIO{
-			"OID_GEN": {
+			PlanTypeOIDGen: {
 				DefaultAction:   "GET",
 				ContextInputs:   nil, // uses service inputs directly (slotID, portID, onuID)
 				RequiredOutputs: []string{"oid"}, // runner reads result["oid"] for SNMP fetch
 			},
-			"POST_PROCESSING": {
+			PlanTypePOSTProcessing: {
 				DefaultAction: "EXECUTE",
 				ContextInputs: []orchestrator.ContractInput{
 					{Key: "snmp_value", Type: "any", Required: true, Description: "Raw SNMP value, injected by orchestrator from runner result"},

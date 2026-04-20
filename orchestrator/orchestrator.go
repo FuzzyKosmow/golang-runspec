@@ -831,10 +831,15 @@ func (r *Orchestrator) applyChains(ctx context.Context, plan *maestro.Plan, acti
 
 			mergedInputs := CloneMap(inputs)
 
-			// Determine result key from runner contract (runner defines how its results
-			// are named in post-processing plans). Falls back to "result" if no contract.
+			// Determine the input key for the chain value by asking the runner
+			// that CLAIMS the post-processing plan's type — not the parent plan's
+			// runner. Per-runner POST_PROC types (v0.1.4+, e.g. POST_PROC_SNMP,
+			// POST_PROC_REST) make this lookup unambiguous: each POST_PROC type is
+			// registered by exactly one runner, which defines its ContextInputs.
+			// Legacy POST_PROCESSING plans (unclaimed by any runner) fall back to
+			// the default "result" key.
 			resultKey := "result"
-			if contract := r.runnerForPlan(plan).Contract(); contract != nil {
+			if contract := r.runnerForPlan(postPlan).Contract(); contract != nil {
 				if planIO, ok := contract.PlanIO[postPlan.Type]; ok && len(planIO.ContextInputs) > 0 {
 					resultKey = planIO.ContextInputs[0].Key
 				}
