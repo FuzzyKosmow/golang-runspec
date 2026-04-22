@@ -405,14 +405,25 @@ func (r *Orchestrator) Run(ctx context.Context, action string, scope int, keys [
 
 	for _, grp := range groups {
 		if grp.runner.SupportsBatch() {
-			batchPlans := make(map[string]*maestro.Plan)
+			invocations := make([]Invocation, 0, len(grp.tasks))
+			batchPlans := make(map[string]*maestro.Plan, len(grp.tasks))
 			for key, task := range grp.tasks {
 				batchPlans[key] = task.Plan
+				// All keys share the orchestrator-level inputs in the
+				// single-target case (one contract, many properties). The
+				// runner sees per-invocation inputs so it can also handle
+				// multi-target callers (e.g. workers) without changing
+				// the dispatch shape.
+				invocations = append(invocations, Invocation{
+					Key:    key,
+					Plan:   task.Plan,
+					Inputs: inputs,
+				})
 			}
 
 			span.AddEvent(fmt.Sprintf("Execute: batch %s — %d plans", action, len(batchPlans)))
 
-			batchResults, err := grp.runner.RunBatch(ctx, batchPlans, action, scope, inputs)
+			batchResults, err := grp.runner.RunMany(ctx, action, scope, invocations)
 			if err != nil {
 				for key, task := range grp.tasks {
 					results[key] = Result{

@@ -184,59 +184,76 @@ func (r *Runner) Run(ctx context.Context, plan *maestro.Plan, action string, sco
 	}
 }
 
-func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, action string, scope int, inputs map[string]any) (map[string]any, error) {
-	_, span := r.tracer.Start(ctx, "REST RunBatch")
+// RunMany executes many (plan, inputs) pairs. Each invocation runs its own
+// REST_PROPERTY plan graph against its own inputs (so different hostnames /
+// parents resolve to different URLs naturally). After all plans resolve,
+// invocations sharing the same fully-resolved URL get one HTTP call —
+// deduplication is automatic because identical inputs produce identical URLs
+// (e.g. TX + RX on one ONU share the diagnostics endpoint).
+//
+// Per-invocation failures (plan exec, transport load, HTTP, missing field)
+// become error values in the results map; only systemic failures return as
+// the second value.
+func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocations []orchestrator.Invocation) (map[string]any, error) {
+	_, span := r.tracer.Start(ctx, "REST RunMany")
 	defer span.End()
 
-	results := make(map[string]any)
+	results := make(map[string]any, len(invocations))
 
-	// Phase 1: Execute plan graphs to get URL path + field info for each key.
-	// Per-key failures here become error values in results (partial-success
-	// semantics) so the rest of the batch can still proceed.
 	type restTarget struct {
 		URLPath       string
 		ResponseField string
 		Transform     string
 		Transport     string // transport config name
+		Parent        string // for server resolution + failover
 	}
 	targets := make(map[string]restTarget)
-	var nonRESTKeys []string
+	var nonREST []orchestrator.Invocation
 
-	for key, plan := range plans {
-		if plan.Type == PlanTypeRESTProperty {
-			state := maestro.NewState(inputs)
-			result, err := r.eng.Execute(plan, state)
+	// Phase 1: Run each REST_PROPERTY plan with its own inputs to produce
+	// (URL path, responseField, transform). TRANSPORT_CONFIG plans are
+	// declarative and skipped here.
+	for _, inv := range invocations {
+		if inv.Plan == nil {
+			results[inv.Key] = fmt.Errorf("nil plan for invocation %s", inv.Key)
+			continue
+		}
+		switch inv.Plan.Type {
+		case PlanTypeRESTProperty:
+			state := maestro.NewState(inv.Inputs)
+			result, err := r.eng.Execute(inv.Plan, state)
 			if err != nil {
-				results[key] = fmt.Errorf("rest plan %s: %w", key, err)
+				results[inv.Key] = fmt.Errorf("rest plan: %w", err)
 				continue
 			}
 			if result.Status != maestro.StatusCompleted {
-				results[key] = fmt.Errorf("rest plan %s did not complete (status: %s)", key, result.Status)
+				results[inv.Key] = fmt.Errorf("rest plan did not complete (status: %s)", result.Status)
 				continue
 			}
 			urlPath, responseField, transform, err := extractRESTParams(result.PrimitiveValue)
 			if err != nil {
-				results[key] = fmt.Errorf("rest params %s: %w", key, err)
+				results[inv.Key] = fmt.Errorf("rest params: %w", err)
 				continue
 			}
-			cfg := decodePlanConfig(plan)
-			targets[key] = restTarget{
+			cfg := decodePlanConfig(inv.Plan)
+			parent, _ := inv.Inputs["parent"].(string)
+			targets[inv.Key] = restTarget{
 				URLPath:       urlPath,
 				ResponseField: responseField,
 				Transform:     transform,
 				Transport:     cfg.Transport,
+				Parent:        parent,
 			}
-		} else if plan.Type == PlanTypeTransportConfig {
-			// Skip transport config docs — not executed
+		case PlanTypeTransportConfig:
+			// Declarative — never executed
 			continue
-		} else {
-			nonRESTKeys = append(nonRESTKeys, key)
+		default:
+			nonREST = append(nonREST, inv)
 		}
 	}
 
-	// Phase 2: Load transport config (once per transport name in this batch).
-	// Transport load failures are per-transport: every key that needed that
-	// transport gets flagged; other transports can still succeed.
+	// Phase 2: Load transport config once per name — every invocation that
+	// references the same transport reuses the cached load.
 	transportConfigs := make(map[string]*TransportConfig)
 	transportLoadErrs := make(map[string]error)
 	for _, t := range targets {
@@ -251,13 +268,14 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 		transportConfigs[t.Transport] = tc
 	}
 
-	// Phase 3: Resolve full URLs and group by URL for deduplication.
-	parent, _ := inputs["parent"].(string)
-
+	// Phase 3: Resolve each invocation to a full URL using ITS OWN parent.
 	type resolvedTarget struct {
 		FullURL       string
+		PrimaryURL    string
+		SecondaryURL  string // empty if no secondary
 		ResponseField string
 		Transform     string
+		Transport     string
 	}
 	resolved := make(map[string]resolvedTarget)
 
@@ -271,62 +289,58 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 			results[key] = fmt.Errorf("no transport config for %q (plan %s)", t.Transport, key)
 			continue
 		}
-		primary, _ := tc.resolveServer(parent)
-		fullURL := primary + t.URLPath
+		primary, secondary := tc.resolveServer(t.Parent)
+		full := primary + t.URLPath
+		var sec string
+		if secondary != "" {
+			sec = secondary + t.URLPath
+		}
 		resolved[key] = resolvedTarget{
-			FullURL:       fullURL,
+			FullURL:       full,
+			PrimaryURL:    full,
+			SecondaryURL:  sec,
 			ResponseField: t.ResponseField,
 			Transform:     t.Transform,
+			Transport:     t.Transport,
 		}
 	}
 
-	// Phase 4: Deduplicate by URL, fetch, extract.
+	// Phase 4: Deduplicate by URL, fetch each unique URL once.
 	type cachedResponse struct {
 		body map[string]any
 		err  error
 	}
 	urlCache := make(map[string]*cachedResponse)
 
-	// Pick the first transport config for HTTP settings (all REST plans in one batch
-	// should share the same transport — they're for the same device type).
-	var batchTC *TransportConfig
-	for _, tc := range transportConfigs {
-		batchTC = tc
-		break
-	}
-
-	if batchTC != nil && r.httpClient != nil {
-		// Collect unique URLs
-		uniqueURLs := make(map[string]struct{})
+	if r.httpClient != nil && len(resolved) > 0 {
+		uniqueURLs := make(map[string]string) // url → transport name (for client config)
+		urlSecondary := make(map[string]string)
 		for _, rt := range resolved {
-			uniqueURLs[rt.FullURL] = struct{}{}
-		}
-
-		span.AddEvent(fmt.Sprintf("REST Batch: %d targets, %d unique URLs", len(resolved), len(uniqueURLs)))
-
-		// Fetch each unique URL
-		for url := range uniqueURLs {
-			body, err := r.doHTTPGet(ctx, span, url, batchTC)
-			urlCache[url] = &cachedResponse{body: body, err: err}
-
-			// Failover: if primary failed, try secondary
-			if err != nil {
-				_, secondary := batchTC.resolveServer(parent)
-				if secondary != "" {
-					// Replace primary prefix with secondary
-					altURL := secondary + url[strings.Index(url[8:], "/")+8:] // skip "https://" to find path
-					span.AddEvent("failover_to_secondary", trace.WithAttributes(
-						attribute.String("secondary.url", altURL),
-					))
-					body, err = r.doHTTPGet(ctx, span, altURL, batchTC)
-					urlCache[url] = &cachedResponse{body: body, err: err}
-				}
+			uniqueURLs[rt.FullURL] = rt.Transport
+			if rt.SecondaryURL != "" {
+				urlSecondary[rt.FullURL] = rt.SecondaryURL
 			}
 		}
 
-		// Extract fields from cached responses. Per-URL HTTP failures and
-		// per-key missing-field conditions become error values in results —
-		// the batch still returns nil so other keys can succeed.
+		span.AddEvent(fmt.Sprintf("REST RunMany: %d invocations, %d unique URLs", len(resolved), len(uniqueURLs)))
+
+		for url, transport := range uniqueURLs {
+			tc := transportConfigs[transport]
+			if tc == nil {
+				urlCache[url] = &cachedResponse{err: fmt.Errorf("transport %q vanished between phases", transport)}
+				continue
+			}
+			body, err := r.doHTTPGet(ctx, span, url, tc)
+			if err != nil && urlSecondary[url] != "" {
+				altURL := urlSecondary[url]
+				span.AddEvent("failover_to_secondary", trace.WithAttributes(
+					attribute.String("secondary.url", altURL),
+				))
+				body, err = r.doHTTPGet(ctx, span, altURL, tc)
+			}
+			urlCache[url] = &cachedResponse{body: body, err: err}
+		}
+
 		for key, rt := range resolved {
 			cached := urlCache[rt.FullURL]
 			if cached.err != nil {
@@ -349,13 +363,14 @@ func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, a
 		}
 	}
 
-	// Phase 5: Execute non-REST plans via engine
-	for _, key := range nonRESTKeys {
-		val, err := r.execPlan(plans[key], inputs)
+	// Phase 5: Non-REST_PROPERTY plans (POST_PROC etc.) execute via engine.
+	for _, inv := range nonREST {
+		val, err := r.execPlan(inv.Plan, inv.Inputs)
 		if err != nil {
-			return nil, fmt.Errorf("exec %s: %w", key, err)
+			results[inv.Key] = fmt.Errorf("exec: %w", err)
+			continue
 		}
-		results[key] = val
+		results[inv.Key] = val
 	}
 
 	return results, nil

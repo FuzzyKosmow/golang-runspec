@@ -130,67 +130,133 @@ func (r *Runner) Run(ctx context.Context, plan *maestro.Plan, action string, sco
 	}
 }
 
-func (r *Runner) RunBatch(ctx context.Context, plans map[string]*maestro.Plan, action string, scope int, inputs map[string]any) (map[string]any, error) {
+// RunMany executes many (plan, inputs) pairs, grouping OID_GEN invocations by
+// SNMP target (dslamIp + community) so each unique target costs ONE bulk
+// GetWithAlias regardless of how many ONUs/properties feed into it. This is
+// what gives the worker per-OLT mega-batch throughput without exposing
+// "OLT" / "contract" concepts to the runner — grouping is a side effect of
+// the standard Inputs keys (dslamIp, snmp).
+//
+// Per-target HTTP/SNMP failures and per-invocation OID-gen failures land as
+// `error` values in the results map (partial-success); only systemic problems
+// (missing client, etc.) are returned as the second value.
+func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocations []orchestrator.Invocation) (map[string]any, error) {
 	span := trace.SpanFromContext(ctx)
-	results := make(map[string]any)
-	oidBatch := make(map[string]string)
-	var nonOIDKeys []string
+	results := make(map[string]any, len(invocations))
 
-	for key, plan := range plans {
-		if plan.Type == PlanTypeOIDGen {
-			state := maestro.NewState(inputs)
-			result, err := r.eng.Execute(plan, state)
-			if err != nil {
-				return nil, fmt.Errorf("oid gen %s: %w", key, err)
-			}
-			if result.Status != maestro.StatusCompleted {
-				return nil, fmt.Errorf("oid gen %s did not complete", key)
-			}
-			oidStr, err := extractOID(result.PrimitiveValue)
-			if err != nil {
-				return nil, fmt.Errorf("oid extract %s: %w", key, err)
-			}
-			oidBatch[key] = oidStr
-		} else {
-			nonOIDKeys = append(nonOIDKeys, key)
-		}
+	type oidEntry struct {
+		invKey string
+		oid    string
+	}
+	type targetKey struct {
+		ip        string
+		community string
 	}
 
-	if len(oidBatch) > 0 {
-		if r.client == nil {
-			return nil, fmt.Errorf("snmp client missing for batch fetch")
+	groups := make(map[targetKey][]oidEntry)
+	var nonOID []orchestrator.Invocation
+
+	// Phase 1: per-invocation OID_GEN execution. Each OID_GEN plan runs
+	// against its own inputs (so per-ONU slotID/portID/onuID parameters
+	// produce per-ONU OIDs even when bundled into one bulk).
+	for _, inv := range invocations {
+		if inv.Plan == nil {
+			results[inv.Key] = fmt.Errorf("nil plan for invocation %s", inv.Key)
+			continue
 		}
-		target, err := BuildBulkTarget(inputs, oidBatch)
-		if err != nil {
-			return nil, fmt.Errorf("bulk target build: %w", err)
+		if inv.Plan.Type != PlanTypeOIDGen {
+			nonOID = append(nonOID, inv)
+			continue
 		}
 
-		span.AddEvent(fmt.Sprintf("SNMP Batch %s: %d OIDs → %s", action, len(oidBatch), target.IP))
+		state := maestro.NewState(inv.Inputs)
+		result, err := r.eng.Execute(inv.Plan, state)
+		if err != nil {
+			results[inv.Key] = fmt.Errorf("oid gen: %w", err)
+			continue
+		}
+		if result.Status != maestro.StatusCompleted {
+			results[inv.Key] = fmt.Errorf("oid gen did not complete (status: %s)", result.Status)
+			continue
+		}
+		oidStr, err := extractOID(result.PrimitiveValue)
+		if err != nil {
+			results[inv.Key] = fmt.Errorf("oid extract: %w", err)
+			continue
+		}
+
+		ip, community, err := extractTransport(inv.Inputs)
+		if err != nil {
+			results[inv.Key] = err
+			continue
+		}
+		tk := targetKey{ip: ip, community: community}
+		groups[tk] = append(groups[tk], oidEntry{invKey: inv.Key, oid: oidStr})
+	}
+
+	// Phase 2: per-target bulk SNMP fetch.
+	if len(groups) > 0 && r.client == nil {
+		return nil, fmt.Errorf("snmp client missing for batch fetch (%d targets queued)", len(groups))
+	}
+	for tk, entries := range groups {
+		oidsByAlias := make(map[string]string, len(entries))
+		for _, e := range entries {
+			oidsByAlias[e.invKey] = e.oid
+		}
+		target := Target{IP: tk.ip, Community: tk.community, OIDs: oidsByAlias}
+
+		span.AddEvent(fmt.Sprintf("SNMP RunMany %s: %d OIDs → %s", action, len(entries), tk.ip))
 
 		snmpResults, err := r.client.GetWithAlias(target)
 		if err != nil {
-			return nil, fmt.Errorf("bulk snmp fetch: %w", err)
+			// Per-target failure: every invocation pinned to this target
+			// gets the same error so callers can attribute it.
+			for _, e := range entries {
+				results[e.invKey] = fmt.Errorf("snmp bulk fetch %s: %w", tk.ip, err)
+			}
+			continue
 		}
 
-		for key, oid := range oidBatch {
-			rawVal := snmpResults[key]
+		for _, e := range entries {
+			rawVal := snmpResults[e.invKey]
 			if rawVal == nil {
-				rawVal = snmpResults[oid]
+				rawVal = snmpResults[e.oid]
 			}
-			results[key] = rawVal
-			span.AddEvent(fmt.Sprintf("  %s: oid=%s raw=%v (%T)", key, oid, rawVal, rawVal))
+			results[e.invKey] = rawVal
+			span.AddEvent(fmt.Sprintf("  %s: oid=%s raw=%v (%T)", e.invKey, e.oid, rawVal, rawVal))
 		}
 	}
 
-	for _, key := range nonOIDKeys {
-		val, err := r.execPlan(plans[key], inputs)
+	// Phase 3: non-OID_GEN plans (POST_PROC etc.) execute via engine,
+	// one at a time with their own inputs.
+	for _, inv := range nonOID {
+		val, err := r.execPlan(inv.Plan, inv.Inputs)
 		if err != nil {
-			return nil, fmt.Errorf("exec %s: %w", key, err)
+			results[inv.Key] = fmt.Errorf("exec: %w", err)
+			continue
 		}
-		results[key] = val
+		results[inv.Key] = val
 	}
 
 	return results, nil
+}
+
+// extractTransport pulls the SNMP target identity (IP + community) from a
+// generic inputs map. Accepts both dslamIp/DslamIP and snmp/SNMP variants.
+// The returned (ip, community) pair is what RunMany groups invocations by.
+func extractTransport(inputs map[string]any) (string, string, error) {
+	ip, _ := inputs["dslamIp"].(string)
+	if ip == "" {
+		ip, _ = inputs["DslamIP"].(string)
+	}
+	community, _ := inputs["snmp"].(string)
+	if community == "" {
+		community, _ = inputs["SNMP"].(string)
+	}
+	if ip == "" || community == "" {
+		return "", "", fmt.Errorf("missing dslamIp or snmp community in inputs")
+	}
+	return ip, community, nil
 }
 
 func (r *Runner) SupportsBatch() bool {

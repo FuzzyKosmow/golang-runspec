@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	maestro "github.com/FuzzyKosmow/golang-runspec"
+	"github.com/FuzzyKosmow/golang-runspec/orchestrator"
 	"github.com/FuzzyKosmow/golang-runspec/parser/n8n"
 	"github.com/FuzzyKosmow/golang-runspec/runner/rest"
 )
@@ -48,16 +49,17 @@ func TestRunBatchPartialSuccess(t *testing.T) {
 		},
 	})
 
-	plans := map[string]*maestro.Plan{
-		"good": mkRestPlan(t, "/good", "value"),
-		"miss": mkRestPlan(t, "/miss", "value"),
-		"down": mkRestPlan(t, "/down", "value"),
+	sharedInputs := map[string]any{"parent": "*"}
+	invocations := []orchestrator.Invocation{
+		{Key: "good", Plan: mkRestPlan(t, "/good", "value"), Inputs: sharedInputs},
+		{Key: "miss", Plan: mkRestPlan(t, "/miss", "value"), Inputs: sharedInputs},
+		{Key: "down", Plan: mkRestPlan(t, "/down", "value"), Inputs: sharedInputs},
 	}
 
 	ctx := context.Background()
-	results, err := runner.RunBatch(ctx, plans, rest.ActionGET, 0, map[string]any{"parent": "*"})
+	results, err := runner.RunMany(ctx, rest.ActionGET, 0, invocations)
 	if err != nil {
-		t.Fatalf("RunBatch should return nil error under partial failure, got: %v", err)
+		t.Fatalf("RunMany should return nil error under partial failure, got: %v", err)
 	}
 
 	if got, want := results["good"], "V9.0.10P9N12"; got != want {

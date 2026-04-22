@@ -17,6 +17,21 @@ type PlanProvider interface {
 	GetPlanByKey(ctx context.Context, scope int, planKey string) (*maestro.Plan, error)
 }
 
+// Invocation is a single (plan, inputs) pair passed to a Runner's RunMany.
+// Each invocation is independent — different inputs let the caller mix
+// targets/contexts in one batch. The Key is opaque to the runner; it's the
+// caller's identifier for matching results back to its domain (e.g.
+// "contractID:property" for a worker, just "property" for a single-target call).
+//
+// Runners that can opportunistically batch transport calls (SNMP grouping by
+// target IP + community, REST grouping by URL) inspect Inputs to decide what
+// to bundle. The Invocation type itself stays domain-neutral.
+type Invocation struct {
+	Key    string
+	Plan   *maestro.Plan
+	Inputs map[string]any
+}
+
 // Runner executes a plan's core work. This is the domain-specific part:
 //   - SNMP service:  OID generation → SNMP fetch → raw value
 //   - Kafka service: produce message / consume + transform
@@ -25,9 +40,15 @@ type PlanProvider interface {
 //
 // The Orchestrator handles guards, chains, and dependency resolution.
 // The Runner handles the "middle" — the actual I/O for a given plan.
+//
+// RunMany is the bulk entry point: callers pass many (plan, inputs) pairs
+// and the runner internally decides how to batch transport calls. Per-key
+// failures should land as `error` values in the results map (partial-success
+// semantics) so sibling keys can still succeed; only systemic failures should
+// be returned as the second value.
 type Runner interface {
 	Run(ctx context.Context, plan *maestro.Plan, action string, scope int, inputs map[string]any) (any, error)
-	RunBatch(ctx context.Context, plans map[string]*maestro.Plan, action string, scope int, inputs map[string]any) (map[string]any, error)
+	RunMany(ctx context.Context, action string, scope int, invocations []Invocation) (map[string]any, error)
 	SupportsBatch() bool
 	// Contract declares this runner's capabilities: allowed actions, plan type I/O.
 	// Returns nil if the runner has no specific requirements.

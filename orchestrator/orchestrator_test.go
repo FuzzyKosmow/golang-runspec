@@ -108,15 +108,15 @@ func (e *engineExecutor) Run(_ context.Context, plan *maestro.Plan, _ string, _ 
 	return result.PrimitiveValue, nil
 }
 
-func (e *engineExecutor) RunBatch(_ context.Context, plans map[string]*maestro.Plan, _ string, _ int, inputs map[string]any) (map[string]any, error) {
-	// Simple: execute each plan individually
+func (e *engineExecutor) RunMany(_ context.Context, _ string, _ int, invocations []orchestrator.Invocation) (map[string]any, error) {
 	results := make(map[string]any)
-	for prop, plan := range plans {
-		val, err := e.Run(context.Background(), plan, "GET", 0, inputs)
+	for _, inv := range invocations {
+		val, err := e.Run(context.Background(), inv.Plan, "GET", 0, inv.Inputs)
 		if err != nil {
-			return nil, err
+			results[inv.Key] = err
+			continue
 		}
-		results[prop] = val
+		results[inv.Key] = val
 	}
 	return results, nil
 }
@@ -718,14 +718,15 @@ func (e *byteArrayExecutor) Run(_ context.Context, plan *maestro.Plan, _ string,
 	return e.value, nil
 }
 
-func (e *byteArrayExecutor) RunBatch(_ context.Context, plans map[string]*maestro.Plan, _ string, _ int, inputs map[string]any) (map[string]any, error) {
+func (e *byteArrayExecutor) RunMany(_ context.Context, _ string, _ int, invocations []orchestrator.Invocation) (map[string]any, error) {
 	results := make(map[string]any)
-	for prop, plan := range plans {
-		val, err := e.Run(context.Background(), plan, "GET", 0, inputs)
+	for _, inv := range invocations {
+		val, err := e.Run(context.Background(), inv.Plan, "GET", 0, inv.Inputs)
 		if err != nil {
-			return nil, err
+			results[inv.Key] = err
+			continue
 		}
-		results[prop] = val
+		results[inv.Key] = val
 	}
 	return results, nil
 }

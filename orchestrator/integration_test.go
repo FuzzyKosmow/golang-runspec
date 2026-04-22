@@ -222,14 +222,14 @@ func (r *trackingRunner) Run(_ context.Context, plan *maestro.Plan, _ string, _ 
 	return result.PrimitiveValue, nil
 }
 
-func (r *trackingRunner) RunBatch(_ context.Context, plans map[string]*maestro.Plan, _ string, _ int, inputs map[string]any) (map[string]any, error) {
+func (r *trackingRunner) RunMany(_ context.Context, _ string, _ int, invocations []orchestrator.Invocation) (map[string]any, error) {
 	results := make(map[string]any)
-	for key, plan := range plans {
-		val, err := r.Run(context.Background(), plan, "GET", 0, inputs)
+	for _, inv := range invocations {
+		val, err := r.Run(context.Background(), inv.Plan, "GET", 0, inv.Inputs)
 		if err != nil {
-			return nil, fmt.Errorf("batch exec %s: %w", key, err)
+			return nil, fmt.Errorf("batch exec %s: %w", inv.Key, err)
 		}
-		results[key] = val
+		results[inv.Key] = val
 	}
 	return results, nil
 }
