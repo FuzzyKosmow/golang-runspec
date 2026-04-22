@@ -814,6 +814,120 @@ func (r *Orchestrator) resolveDependency(
 	return val, nil
 }
 
+// RunInvocations dispatches a caller-supplied list of invocations and applies
+// per-result chains. Use this when the caller already has plans + per-target
+// inputs (e.g. a worker scanning many ONUs across many OLTs in one batch) —
+// the orchestrator's standard Run entry point assumes one shared inputs map
+// per call, which collapses to a single transport target.
+//
+// Behavior:
+//   - Invocations are grouped by runner (via plan.Type) and dispatched as one
+//     RunMany call per runner. Runners that group internally by transport
+//     (SNMP by dslamIp+community, REST by URL) get to bulk across many
+//     invocations in one network call.
+//   - Per-invocation chains (RUN_PLAN, etc.) declared in plan.RunSpec are
+//     applied to each successful raw value before returning.
+//   - Per-invocation errors surface as Result{Status: StatusError, Error: ...}
+//     so siblings keep succeeding (partial-success).
+//   - Capability gate and guards are NOT evaluated here — caller is expected
+//     to have pre-filtered. Use Run() if you need full guard evaluation.
+func (r *Orchestrator) RunInvocations(ctx context.Context, action string, scope int, invocations []Invocation) (map[string]Result, error) {
+	span := trace.SpanFromContext(ctx)
+	results := make(map[string]Result, len(invocations))
+
+	if len(invocations) == 0 {
+		return results, nil
+	}
+
+	type group struct {
+		runner Runner
+		invs   []Invocation
+	}
+	groups := make(map[Runner]*group)
+	for _, inv := range invocations {
+		if inv.Plan == nil {
+			results[inv.Key] = Result{Name: inv.Key, Status: StatusError, Error: "invocation has nil plan"}
+			continue
+		}
+		rn := r.runnerForPlan(inv.Plan)
+		g, ok := groups[rn]
+		if !ok {
+			g = &group{runner: rn}
+			groups[rn] = g
+		}
+		g.invs = append(g.invs, inv)
+	}
+
+	for _, g := range groups {
+		span.AddEvent(fmt.Sprintf("RunInvocations: dispatch %d invocations to %s", len(g.invs), runnerName(g.runner)))
+
+		raw, err := g.runner.RunMany(ctx, action, scope, g.invs)
+		if err != nil {
+			for _, inv := range g.invs {
+				results[inv.Key] = Result{
+					Name:   inv.Key,
+					Status: StatusError,
+					Error:  fmt.Sprintf("runner failure: %v", err),
+				}
+			}
+			span.AddEvent(fmt.Sprintf("RunInvocations: runner FAILED — %s", truncate(err.Error(), 80)))
+			continue
+		}
+
+		for _, inv := range g.invs {
+			rawVal, present := raw[inv.Key]
+			if !present {
+				results[inv.Key] = Result{
+					Name:   inv.Key,
+					Status: StatusError,
+					Error:  "no result returned for invocation",
+				}
+				continue
+			}
+			if perKeyErr, isErr := rawVal.(error); isErr {
+				results[inv.Key] = Result{
+					Name:   inv.Key,
+					Status: StatusError,
+					Error:  fmt.Sprintf("execution failed: %v", perKeyErr),
+				}
+				continue
+			}
+
+			val := rawVal
+			if inv.Plan.HasChains(action) {
+				v, chainErr := r.applyChains(ctx, inv.Plan, action, scope, inv.Inputs, rawVal, nil)
+				if chainErr != nil {
+					results[inv.Key] = Result{
+						Name:   inv.Key,
+						Status: StatusError,
+						Error:  fmt.Sprintf("chain failed: %v", chainErr),
+					}
+					continue
+				}
+				val = v
+			}
+
+			results[inv.Key] = Result{
+				Name:   inv.Key,
+				Status: StatusSuccess,
+				Value:  val,
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func runnerName(r Runner) string {
+	if r == nil {
+		return "<nil>"
+	}
+	if c := r.Contract(); c != nil {
+		return c.Name
+	}
+	return "unknown"
+}
+
 // applyChains processes all chains for a plan's action result.
 // Dispatches by step type: RUN_PLAN executes a sub-plan, future types (EMIT_EVENT, etc.) handled here.
 // Returns the (potentially transformed) value after all chains are applied.
