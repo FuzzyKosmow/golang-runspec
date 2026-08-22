@@ -103,6 +103,7 @@ func rewriteExpressionString(expr string) string {
 //	arr.find(p => body)    → find(arr, body with p → #)
 //	arr.filter(p => body)  → filter(arr, body with p → #)
 //	arr.map(p => body)     → map(arr, body with p → #)
+//	null                   → nil
 //
 // Multi-pass so chains collapse correctly: String(x).padStart(3, "0") first
 // becomes toString(x).padStart(3, "0") and then padStart(toString(x), 3, "0").
@@ -132,6 +133,10 @@ func rewriteJSExpressionCode(code string) string {
 			continue
 		}
 		if next, ok := tryRewriteHigherOrder(code, bm, "map"); ok {
+			code = next
+			continue
+		}
+		if next, ok := tryRewriteNullLiteral(code); ok {
 			code = next
 			continue
 		}
@@ -171,6 +176,65 @@ func tryRewriteStringFn(code string, bm bracketMap) (string, bool) {
 		return code[:abs] + "toString" + code[parenIdx:closePos+1] + code[closePos+1:], true
 	}
 	return code, false
+}
+
+// tryRewriteNullLiteral rewrites the JS `null` literal to expr-lang's `nil`.
+// Without it an n8n-authored expression is forced to pick a side: `null`
+// previews in the n8n editor but fails the Go compile with "unknown name null",
+// while `nil` compiles in Go and shows "invalid syntax" in the editor. There is
+// no third spelling, so a plan that returns a null-ish value could not be valid
+// on both sides at once.
+//
+// Rewrites EVERY occurrence in one pass (unlike the call-rewriters above, which
+// do one at a time and re-enter the loop). Skips string and template literals so
+// `x == "null"` is left alone, requires identifier boundaries so `nullable` and
+// `isNull` are untouched, and refuses a leading dot so the property access
+// `obj.null` survives.
+func tryRewriteNullLiteral(code string) (string, bool) {
+	const target = "null"
+	if !strings.Contains(code, target) {
+		return code, false
+	}
+	var out strings.Builder
+	out.Grow(len(code))
+	changed := false
+	i := 0
+	for i < len(code) {
+		switch c := code[i]; {
+		case c == '"' || c == '\'':
+			j := skipStringForward(code, i)
+			if j < 0 {
+				out.WriteString(code[i:])
+				return out.String(), changed
+			}
+			out.WriteString(code[i:j])
+			i = j
+			continue
+		case c == '`':
+			j := skipBacktickForward(code, i)
+			if j < 0 {
+				out.WriteString(code[i:])
+				return out.String(), changed
+			}
+			out.WriteString(code[i:j])
+			i = j
+			continue
+		}
+		if strings.HasPrefix(code[i:], target) {
+			prevOK := i == 0 || (!isIdentContinue(rune(code[i-1])) && code[i-1] != '.')
+			end := i + len(target)
+			nextOK := end >= len(code) || !isIdentContinue(rune(code[end]))
+			if prevOK && nextOK {
+				out.WriteString("nil")
+				i = end
+				changed = true
+				continue
+			}
+		}
+		out.WriteByte(code[i])
+		i++
+	}
+	return out.String(), changed
 }
 
 // tryRewriteSimpleMethod rewrites the first occurrence of
