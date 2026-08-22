@@ -147,6 +147,12 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 	type oidEntry struct {
 		invKey string
 		oid    string
+		// prop is the plan's configured property name ("RX", "TX", …). Carried
+		// from phase 1 purely so an absent varbind can be reported with the
+		// same wording Run() uses — the single path names the property, and a
+		// bulk failure that only says "invocation 12345:RX" is one indirection
+		// away from being actionable.
+		prop string
 	}
 	type targetKey struct {
 		ip        string
@@ -191,7 +197,11 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 			continue
 		}
 		tk := targetKey{ip: ip, community: community}
-		groups[tk] = append(groups[tk], oidEntry{invKey: inv.Key, oid: oidStr})
+		groups[tk] = append(groups[tk], oidEntry{
+			invKey: inv.Key,
+			oid:    oidStr,
+			prop:   decodePlanConfig(inv.Plan).Property,
+		})
 	}
 
 	// Phase 2: per-target bulk SNMP fetch.
@@ -218,9 +228,21 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 		}
 
 		for _, e := range entries {
-			rawVal := snmpResults[e.invKey]
+			rawVal, answered := lookupBulkValue(snmpResults, e.invKey, e.oid)
 			if rawVal == nil {
-				rawVal = snmpResults[e.oid]
+				// An absent varbind is an ERROR, exactly as it is in Run().
+				// Storing a bare nil here would record StatusSuccess with a
+				// nil value (RunInvocations only treats an `error` value as a
+				// failure), making "the agent did not answer this OID" and
+				// "the reading is genuinely absent" indistinguishable — to the
+				// caller, to the chains that then run on nil, and ultimately to
+				// the DB column. Measured on prod 2026-08-22: 1,508 D13
+				// contracts failed with an empty failedProperties list and no
+				// error anywhere, while instant-scan (which goes through Run())
+				// read the same contracts fine.
+				results[e.invKey] = absentVarbindError(e.prop, e.invKey, e.oid, answered)
+				span.AddEvent(fmt.Sprintf("  %s: oid=%s ABSENT (answered=%v)", e.invKey, e.oid, answered))
+				continue
 			}
 			results[e.invKey] = rawVal
 			span.AddEvent(fmt.Sprintf("  %s: oid=%s raw=%v (%T)", e.invKey, e.oid, rawVal, rawVal))
@@ -322,6 +344,52 @@ func extractOID(value any) (string, error) {
 		return str, nil
 	}
 	return "", fmt.Errorf("cannot extract OID from result type %T", value)
+}
+
+// lookupBulkValue resolves one entry's value from a bulk result map. It
+// accepts either the invocation key (what the standard GetWithAlias returns,
+// since it re-keys by alias) or the raw OID, because a Client implementation
+// is free to key by OID instead.
+//
+// The bool answers a DIFFERENT question from the value: it reports whether the
+// agent returned a varbind for this OID AT ALL. A present-but-nil entry is the
+// agent saying noSuchInstance/noSuchObject — it knows the OID and denies the
+// instance. An absent entry means the OID never came back, which on a
+// multi-varbind GET points at the AGENT truncating the response rather than at
+// the instance being wrong. Those two lead to opposite investigations, so the
+// error message keeps them apart.
+func lookupBulkValue(results map[string]any, invKey, oid string) (any, bool) {
+	if v, ok := results[invKey]; ok {
+		if v != nil {
+			return v, true
+		}
+		return nil, true
+	}
+	if v, ok := results[oid]; ok {
+		if v != nil {
+			return v, true
+		}
+		return nil, true
+	}
+	return nil, false
+}
+
+// absentVarbindError builds the error stored for an OID the bulk GET did not
+// answer. Wording mirrors Run()'s single-invocation error ("snmp returned no
+// value for %s (oid: %s)") so the same ES query matches both paths, with the
+// cause appended.
+//
+// prop falls back to the invocation key: the key is caller-chosen (the worker
+// uses "<contractID>:<property>"), so it always carries enough to identify the
+// row even when a plan omits config.property.
+func absentVarbindError(prop, invKey, oid string, answered bool) error {
+	if prop == "" {
+		prop = invKey
+	}
+	if answered {
+		return fmt.Errorf("snmp returned no value for %s (oid: %s): agent answered noSuchInstance/noSuchObject", prop, oid)
+	}
+	return fmt.Errorf("snmp returned no value for %s (oid: %s): varbind absent from the bulk response", prop, oid)
 }
 
 func extractValue(vals map[string]any) any {

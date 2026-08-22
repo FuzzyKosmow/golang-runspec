@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -174,6 +175,12 @@ type recordingClient struct {
 	responses   map[string]any  // alias → value
 	failTargets map[string]bool // IPs that should error
 	calls       []snmp.Target
+	// omitUnknown switches the shape of a miss. false (default) mimics an
+	// agent answering noSuchInstance: the key is present with a nil value,
+	// which is what GetMultiple stores for such a PDU. true mimics the agent
+	// dropping the varbind from the response entirely, which is what a
+	// truncated multi-OID GetResponse looks like after GetWithAlias re-keys.
+	omitUnknown bool
 }
 
 func (c *recordingClient) Get(ip, community, oid string) (any, error) {
@@ -194,7 +201,9 @@ func (c *recordingClient) GetWithAlias(t snmp.Target) (map[string]any, error) {
 	for alias, oid := range t.OIDs {
 		if v, ok := c.responses[oid]; ok {
 			out[alias] = v
-		} else {
+			continue
+		}
+		if !c.omitUnknown {
 			out[alias] = nil
 		}
 	}
@@ -227,3 +236,80 @@ func (e simulatedErr) Error() string { return string(e) }
 // jsonOK is a no-op kept in case future test cases need to inspect the
 // response body shape.
 var _ = json.Marshal
+
+// TestRunMany_AbsentVarbindIsAnError is the regression test for the defect
+// that made the 2026-08-22 prod shadow run undiagnosable: RunMany stored an
+// unanswered OID as a nil SUCCESS, so a failed contract carried no error, no
+// property name and no OID — while the same contract through Run() reported
+// all three. The two absence shapes must both error, and must say which one
+// happened, because they point at different causes: noSuchInstance means the
+// instance is wrong, an omitted varbind means the agent truncated the reply.
+func TestRunMany_AbsentVarbindIsAnError(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		omit      bool
+		wantCause string
+	}{
+		{"noSuchInstance", false, "noSuchInstance"},
+		{"omitted from response", true, "varbind absent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &recordingClient{
+				responses:   map[string]any{"oid-present": int64(-190)},
+				omitUnknown: tc.omit,
+			}
+			r := snmp.NewRunner(stub)
+
+			results, err := r.RunMany(context.Background(), snmp.ActionGET, 0, []orchestrator.Invocation{
+				newConstOIDInvocation("42:RX", "oid-present", "11.1.1.1", "comm"),
+				newConstOIDInvocation("42:TX", "oid-missing", "11.1.1.1", "comm"),
+			})
+			if err != nil {
+				t.Fatalf("RunMany: %v", err)
+			}
+
+			// The answered OID is untouched — an absent sibling in the same
+			// bulk call must not cost it, or we trade a silent nil for the
+			// chunk-wide collateral this whole path exists to avoid.
+			if results["42:RX"] != int64(-190) {
+				t.Errorf("42:RX should still succeed, got %v (%T)", results["42:RX"], results["42:RX"])
+			}
+
+			missErr, ok := results["42:TX"].(error)
+			if !ok {
+				t.Fatalf("42:TX should be an error value, got %T (%v)", results["42:TX"], results["42:TX"])
+			}
+			// The OID is the one datum the investigation lacked — assert it
+			// explicitly rather than just checking for non-nil.
+			if !strings.Contains(missErr.Error(), "oid-missing") {
+				t.Errorf("error must name the OID, got: %v", missErr)
+			}
+			if !strings.Contains(missErr.Error(), tc.wantCause) {
+				t.Errorf("error must distinguish the absence cause %q, got: %v", tc.wantCause, missErr)
+			}
+		})
+	}
+}
+
+// TestRunMany_AbsentVarbindNamesTheProperty proves the error carries the plan's
+// configured property rather than only the caller's invocation key, matching
+// Run()'s wording so one ES query covers the bulk and single paths alike.
+func TestRunMany_AbsentVarbindNamesTheProperty(t *testing.T) {
+	stub := &recordingClient{responses: map[string]any{}}
+	r := snmp.NewRunner(stub)
+
+	inv := newConstOIDInvocation("42:RX", "oid-missing", "11.1.1.1", "comm")
+	inv.Plan.Config = []byte(`{"property":"RX","deviceType":13}`)
+
+	results, err := r.RunMany(context.Background(), snmp.ActionGET, 0, []orchestrator.Invocation{inv})
+	if err != nil {
+		t.Fatalf("RunMany: %v", err)
+	}
+	missErr, ok := results["42:RX"].(error)
+	if !ok {
+		t.Fatalf("expected an error value, got %T", results["42:RX"])
+	}
+	if !strings.Contains(missErr.Error(), "no value for RX") {
+		t.Errorf("error should name the property RX, got: %v", missErr)
+	}
+}
