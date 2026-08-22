@@ -7,6 +7,8 @@ import (
 	"github.com/FuzzyKosmow/golang-runspec"
 	"github.com/FuzzyKosmow/golang-runspec/engine"
 	"github.com/FuzzyKosmow/golang-runspec/orchestrator"
+	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -86,6 +88,9 @@ func (r *Runner) Run(ctx context.Context, plan *maestro.Plan, action string, sco
 		oidStr, err := extractOID(result.PrimitiveValue)
 		if err != nil {
 			return nil, fmt.Errorf("oid extract failed: %w", err)
+		}
+		if err := validateOID(oidStr); err != nil {
+			return nil, fmt.Errorf("oid invalid: %w", err)
 		}
 
 		if r.client == nil {
@@ -188,6 +193,22 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 		oidStr, err := extractOID(result.PrimitiveValue)
 		if err != nil {
 			results[inv.Key] = fmt.Errorf("oid extract: %w", err)
+			continue
+		}
+		// Reject a malformed OID HERE, before it joins a target group. gosnmp
+		// marshals the whole varbind list in one pass, so a single unmarshalable
+		// OID fails the entire bulk GET client-side — the PDU never leaves the
+		// pod — and RunMany's per-target error path then attributes that failure
+		// to every invocation in the group. One bad contract took down its ~15
+		// chunk-mates on the 2026-08-22 prod run.
+		//
+		// The usual source is a plan template variable that did not resolve:
+		// extractOID formats with %v, so an unset value arrives as "<nil>" (or
+		// "undefined" from a JS expression) — a non-numeric component. Failing
+		// just this invocation keeps the blast radius at the one contract whose
+		// topology is actually wrong.
+		if err := validateOID(oidStr); err != nil {
+			results[inv.Key] = fmt.Errorf("oid invalid: %w", err)
 			continue
 		}
 
@@ -299,7 +320,7 @@ func (r *Runner) Contract() *orchestrator.RunnerContract {
 		PlanIO: map[string]orchestrator.PlanTypeIO{
 			PlanTypeOIDGen: {
 				DefaultAction:   "GET",
-				ContextInputs:   nil, // uses service inputs directly (slotID, portID, onuID)
+				ContextInputs:   nil,             // uses service inputs directly (slotID, portID, onuID)
 				RequiredOutputs: []string{"oid"}, // runner reads result["oid"] for SNMP fetch
 			},
 			PlanTypePOSTProcessing: {
@@ -345,6 +366,60 @@ func extractOID(value any) (string, error) {
 	}
 	return "", fmt.Errorf("cannot extract OID from result type %T", value)
 }
+
+// validateOID reports whether gosnmp can marshal this OID, and if not, WHICH
+// component is at fault. It deliberately duplicates gosnmp's rules
+// (marshalObjectIdentifier in helper.go) rather than probing with a trial
+// marshal, because gosnmp returns one opaque string — "Invalid object
+// identifier" — for every rejection, with no offset, no component and no OID.
+// That message is what a failing contract used to carry all the way to ES.
+//
+// Stricter than gosnmp in exactly one place: gosnmp SKIPS empty components, so
+// "…1.4..7" silently marshals to a valid OID pointing at the WRONG instance.
+// An empty component means a template variable resolved to "", which is the
+// same authoring bug as "<nil>" and should not be answered with a plausible
+// reading from some other ONU.
+func validateOID(oid string) error {
+	if oid == "" {
+		return fmt.Errorf("OID is empty")
+	}
+	parts := strings.Split(strings.TrimPrefix(oid, "."), ".")
+	for i, part := range parts {
+		if part == "" {
+			return fmt.Errorf("component %d of %q is empty — a template variable resolved to \"\"", i+1, oid)
+		}
+		val, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return fmt.Errorf("component %d of %q is not numeric (%q) — a template variable did not resolve", i+1, oid, part)
+		}
+		switch i {
+		case 0:
+			if val > 6 {
+				return fmt.Errorf("component 1 of %q must be 0-6, got %d", oid, val)
+			}
+		case 1:
+			if val >= 40 {
+				return fmt.Errorf("component 2 of %q must be < 40, got %d", oid, val)
+			}
+		default:
+			if val > maxSubIdentifier {
+				return fmt.Errorf("component %d of %q exceeds the 32-bit sub-identifier limit: %d", i+1, oid, val)
+			}
+		}
+	}
+	if len(parts) < 2 {
+		return fmt.Errorf("OID %q has %d component(s); at least 2 are required", oid, len(parts))
+	}
+	if len(parts) > 128 {
+		return fmt.Errorf("OID %q has %d components; the limit is 128", oid, len(parts))
+	}
+	return nil
+}
+
+// maxSubIdentifier mirrors gosnmp.MaxObjectSubIdentifierValue (2^32-1). Held
+// locally so the validator does not drag a gosnmp import into this file — the
+// Client interface is the only place the library belongs.
+const maxSubIdentifier = 4294967295
 
 // lookupBulkValue resolves one entry's value from a bulk result map. It
 // accepts either the invocation key (what the standard GetWithAlias returns,

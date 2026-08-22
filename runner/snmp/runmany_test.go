@@ -24,9 +24,9 @@ func TestRunMany_GroupsByTarget(t *testing.T) {
 	// 3 OIDs (one per property).
 	stub := &recordingClient{
 		responses: map[string]any{
-			"oid-A-RX": int64(-180), "oid-A-TX": int64(20), "oid-A-OS": int64(1),
-			"oid-B-RX": int64(-200), "oid-B-TX": int64(22), "oid-B-OS": int64(1),
-			"oid-C-RX": int64(-150), "oid-C-TX": int64(25), "oid-C-OS": int64(1),
+			".1.3.6.1.4.1.9999.1.1": int64(-180), ".1.3.6.1.4.1.9999.1.2": int64(20), ".1.3.6.1.4.1.9999.1.3": int64(1),
+			".1.3.6.1.4.1.9999.2.1": int64(-200), ".1.3.6.1.4.1.9999.2.2": int64(22), ".1.3.6.1.4.1.9999.2.3": int64(1),
+			".1.3.6.1.4.1.9999.3.1": int64(-150), ".1.3.6.1.4.1.9999.3.2": int64(25), ".1.3.6.1.4.1.9999.3.3": int64(1),
 		},
 	}
 
@@ -35,16 +35,16 @@ func TestRunMany_GroupsByTarget(t *testing.T) {
 	// Build invocations. Each has a fixed OID embedded in plan.Config.constOID
 	// — easier than wiring the full plan engine for this test.
 	invs := []orchestrator.Invocation{
-		newConstOIDInvocation("A:RX", "oid-A-RX", "11.1.1.1", "comm1"),
-		newConstOIDInvocation("A:TX", "oid-A-TX", "11.1.1.1", "comm1"),
-		newConstOIDInvocation("A:OS", "oid-A-OS", "11.1.1.1", "comm1"),
-		newConstOIDInvocation("B:RX", "oid-B-RX", "11.1.1.2", "comm1"),
-		newConstOIDInvocation("B:TX", "oid-B-TX", "11.1.1.2", "comm1"),
-		newConstOIDInvocation("B:OS", "oid-B-OS", "11.1.1.2", "comm1"),
+		newConstOIDInvocation("A:RX", ".1.3.6.1.4.1.9999.1.1", "11.1.1.1", "comm1"),
+		newConstOIDInvocation("A:TX", ".1.3.6.1.4.1.9999.1.2", "11.1.1.1", "comm1"),
+		newConstOIDInvocation("A:OS", ".1.3.6.1.4.1.9999.1.3", "11.1.1.1", "comm1"),
+		newConstOIDInvocation("B:RX", ".1.3.6.1.4.1.9999.2.1", "11.1.1.2", "comm1"),
+		newConstOIDInvocation("B:TX", ".1.3.6.1.4.1.9999.2.2", "11.1.1.2", "comm1"),
+		newConstOIDInvocation("B:OS", ".1.3.6.1.4.1.9999.2.3", "11.1.1.2", "comm1"),
 		// Same IP as B but different community — must be its own group.
-		newConstOIDInvocation("C:RX", "oid-C-RX", "11.1.1.2", "comm2"),
-		newConstOIDInvocation("C:TX", "oid-C-TX", "11.1.1.2", "comm2"),
-		newConstOIDInvocation("C:OS", "oid-C-OS", "11.1.1.2", "comm2"),
+		newConstOIDInvocation("C:RX", ".1.3.6.1.4.1.9999.3.1", "11.1.1.2", "comm2"),
+		newConstOIDInvocation("C:TX", ".1.3.6.1.4.1.9999.3.2", "11.1.1.2", "comm2"),
+		newConstOIDInvocation("C:OS", ".1.3.6.1.4.1.9999.3.3", "11.1.1.2", "comm2"),
 	}
 
 	results, err := r.RunMany(context.Background(), snmp.ActionGET, 0, invs)
@@ -87,17 +87,17 @@ func TestRunMany_GroupsByTarget(t *testing.T) {
 func TestRunMany_PerTargetFailure(t *testing.T) {
 	stub := &recordingClient{
 		responses: map[string]any{
-			"oid-good-1": int64(42),
-			"oid-good-2": int64(43),
+			".1.3.6.1.4.1.9999.10.1": int64(42),
+			".1.3.6.1.4.1.9999.10.2": int64(43),
 		},
 		failTargets: map[string]bool{"11.99.99.99": true},
 	}
 
 	r := snmp.NewRunner(stub)
 	invs := []orchestrator.Invocation{
-		newConstOIDInvocation("good:1", "oid-good-1", "11.1.1.1", "c"),
-		newConstOIDInvocation("good:2", "oid-good-2", "11.1.1.1", "c"),
-		newConstOIDInvocation("bad:X", "oid-bad-X", "11.99.99.99", "c"),
+		newConstOIDInvocation("good:1", ".1.3.6.1.4.1.9999.10.1", "11.1.1.1", "c"),
+		newConstOIDInvocation("good:2", ".1.3.6.1.4.1.9999.10.2", "11.1.1.1", "c"),
+		newConstOIDInvocation("bad:X", ".1.3.6.1.4.1.9999.10.3", "11.99.99.99", "c"),
 	}
 	results, err := r.RunMany(context.Background(), snmp.ActionGET, 0, invs)
 	if err != nil {
@@ -120,6 +120,13 @@ func TestRunMany_PerTargetFailure(t *testing.T) {
 }
 
 // --- helpers ---
+//
+// Fixture OIDs are REAL dotted-numeric OIDs (enterprise 9999 = obviously
+// synthetic), not readable placeholders like "oid-A-RX". They have to be:
+// RunMany validates every generated OID before it joins a target group, so a
+// placeholder is rejected in phase 1 and the test stops exercising the path it
+// was written for. TestRunMany_PerTargetFailure is the sharp case — its bad
+// invocation must fail at the TRANSPORT, which means its OID must be valid.
 
 // newConstOIDInvocation builds an Invocation whose Plan is a stub OID_GEN
 // returning a constant OID via the engine. We embed the OID in a Set node so
@@ -255,14 +262,14 @@ func TestRunMany_AbsentVarbindIsAnError(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := &recordingClient{
-				responses:   map[string]any{"oid-present": int64(-190)},
+				responses:   map[string]any{".1.3.6.1.4.1.9999.20.1": int64(-190)},
 				omitUnknown: tc.omit,
 			}
 			r := snmp.NewRunner(stub)
 
 			results, err := r.RunMany(context.Background(), snmp.ActionGET, 0, []orchestrator.Invocation{
-				newConstOIDInvocation("42:RX", "oid-present", "11.1.1.1", "comm"),
-				newConstOIDInvocation("42:TX", "oid-missing", "11.1.1.1", "comm"),
+				newConstOIDInvocation("42:RX", ".1.3.6.1.4.1.9999.20.1", "11.1.1.1", "comm"),
+				newConstOIDInvocation("42:TX", ".1.3.6.1.4.1.9999.20.2", "11.1.1.1", "comm"),
 			})
 			if err != nil {
 				t.Fatalf("RunMany: %v", err)
@@ -281,7 +288,7 @@ func TestRunMany_AbsentVarbindIsAnError(t *testing.T) {
 			}
 			// The OID is the one datum the investigation lacked — assert it
 			// explicitly rather than just checking for non-nil.
-			if !strings.Contains(missErr.Error(), "oid-missing") {
+			if !strings.Contains(missErr.Error(), ".1.3.6.1.4.1.9999.20.2") {
 				t.Errorf("error must name the OID, got: %v", missErr)
 			}
 			if !strings.Contains(missErr.Error(), tc.wantCause) {
@@ -298,7 +305,7 @@ func TestRunMany_AbsentVarbindNamesTheProperty(t *testing.T) {
 	stub := &recordingClient{responses: map[string]any{}}
 	r := snmp.NewRunner(stub)
 
-	inv := newConstOIDInvocation("42:RX", "oid-missing", "11.1.1.1", "comm")
+	inv := newConstOIDInvocation("42:RX", ".1.3.6.1.4.1.9999.20.2", "11.1.1.1", "comm")
 	inv.Plan.Config = []byte(`{"property":"RX","deviceType":13}`)
 
 	results, err := r.RunMany(context.Background(), snmp.ActionGET, 0, []orchestrator.Invocation{inv})
@@ -311,5 +318,87 @@ func TestRunMany_AbsentVarbindNamesTheProperty(t *testing.T) {
 	}
 	if !strings.Contains(missErr.Error(), "no value for RX") {
 		t.Errorf("error should name the property RX, got: %v", missErr)
+	}
+}
+
+// TestValidateOID_RejectsUnresolvedTemplates covers the shapes an unresolved
+// plan variable actually produces. gosnmp answers all of them with the same
+// opaque "Invalid object identifier", so the point of the guard is that the
+// error says WHICH component and WHY.
+func TestValidateOID_RejectsUnresolvedTemplates(t *testing.T) {
+	valid := []string{
+		".1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4.16777728.0", // real D14 shape
+		"1.3.6.1.2.1.1.3.0",                      // no leading dot
+		".1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4.0", // onu=0 — legal, must NOT be rejected
+	}
+	for _, oid := range valid {
+		if err := snmp.ExportValidateOID(oid); err != nil {
+			t.Errorf("%q should be valid, got: %v", oid, err)
+		}
+	}
+
+	invalid := []struct {
+		oid  string
+		want string
+	}{
+		{".1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4.<nil>.0", "not numeric"},     // Go %v on nil
+		{".1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4.undefined.0", "not numeric"}, // JS unset
+		{".1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4..0", "is empty"},             // resolved to ""
+		{"", "is empty"},
+		{".1", "at least 2"},
+		{".7.3.6.1", "must be 0-6"},
+		{".1.40.6.1", "must be < 40"},
+		{".1.3.4294967296", "32-bit"},
+	}
+	for _, tc := range invalid {
+		err := snmp.ExportValidateOID(tc.oid)
+		if err == nil {
+			t.Errorf("%q should be rejected", tc.oid)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: error should explain %q, got: %v", tc.oid, tc.want, err)
+		}
+	}
+}
+
+// TestRunMany_InvalidOIDFailsOnlyItsOwnInvocation is the regression test for
+// the chunk-kill: gosnmp marshals the varbind list in one pass, so before the
+// guard a single malformed OID failed every contract sharing its target.
+func TestRunMany_InvalidOIDFailsOnlyItsOwnInvocation(t *testing.T) {
+	stub := &recordingClient{
+		responses: map[string]any{".1.3.6.1.4.1.9999.30.1": int64(-190)},
+	}
+	r := snmp.NewRunner(stub)
+
+	results, err := r.RunMany(context.Background(), snmp.ActionGET, 0, []orchestrator.Invocation{
+		newConstOIDInvocation("42:RX", ".1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4.<nil>.0", "11.1.1.1", "comm"),
+		newConstOIDInvocation("43:RX", ".1.3.6.1.4.1.9999.30.1", "11.1.1.1", "comm"),
+	})
+	if err != nil {
+		t.Fatalf("RunMany: %v", err)
+	}
+
+	badErr, ok := results["42:RX"].(error)
+	if !ok {
+		t.Fatalf("42:RX should be an error value, got %T", results["42:RX"])
+	}
+	if !strings.Contains(badErr.Error(), "oid invalid") {
+		t.Errorf("error should be attributed to the OID, got: %v", badErr)
+	}
+
+	// The whole point: the chunk-mate is untouched.
+	if results["43:RX"] != int64(-190) {
+		t.Errorf("43:RX must survive its neighbour's bad OID, got %v (%T)", results["43:RX"], results["43:RX"])
+	}
+
+	// And the malformed OID must never have reached the transport — if it had,
+	// gosnmp would have failed the marshal for the whole target.
+	for _, c := range stub.snapshotCalls() {
+		for alias, oid := range c.OIDs {
+			if strings.Contains(oid, "<nil>") {
+				t.Errorf("invalid OID reached the client under alias %s: %s", alias, oid)
+			}
+		}
 	}
 }
