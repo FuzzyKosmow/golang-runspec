@@ -81,12 +81,27 @@ type CommandDefinition struct {
 }
 
 // NewState creates a fresh execution state with initial inputs.
+//
+// ⚠ THE INPUTS ARE CLONED, NOT ALIASED. Context is mutable execution state —
+// SET, SWITCH_MAP and DATA_TRANSFORM all write into it — so aliasing the
+// caller's map silently turned it into shared mutable state. Callers routinely
+// hold one inputs map and hand it to several runs: Orchestrator.Run resolves
+// dependencies concurrently on a single map, and a consumer building one
+// Invocation per property from one map would have those run in parallel too.
+// Either way, two goroutines touching this map is `fatal error: concurrent map
+// read and map write` — unrecoverable, process gone. It killed the scan-worker
+// roughly hourly until 2026-09-03.
+//
+// Shallow, matching orchestrator.CloneMap (duplicated rather than imported:
+// orchestrator imports this package, so reusing it would be an import cycle).
+// Nested maps stay shared; plan inputs are scalars today.
 func NewState(inputs map[string]any) *ExecutionState {
-	if inputs == nil {
-		inputs = make(map[string]any)
+	ctx := make(map[string]any, len(inputs)+4)
+	for k, v := range inputs {
+		ctx[k] = v
 	}
 	return &ExecutionState{
-		Context:            inputs,
+		Context:            ctx,
 		InstructionPointer: "", // Will start at Start Node
 		VisitedNodes:       make([]string, 0),
 		ScopeStack:         make([]Scope, 0),
