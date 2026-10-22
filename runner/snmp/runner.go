@@ -3,13 +3,18 @@ package snmp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/FuzzyKosmow/golang-runspec"
 	"github.com/FuzzyKosmow/golang-runspec/engine"
 	"github.com/FuzzyKosmow/golang-runspec/orchestrator"
+	"net"
 	"strconv"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -62,13 +67,14 @@ func decodePlanConfig(plan *maestro.Plan) planConfig {
 type Runner struct {
 	eng    *engine.Engine
 	client Client
+	tracer trace.Tracer
 }
 
 // NewRunner creates an SNMP runner with the given SNMP client.
 func NewRunner(client Client) *Runner {
 	eng := engine.New()
 	eng.RegisterStandardHandlers()
-	return &Runner{eng: eng, client: client}
+	return &Runner{eng: eng, client: client, tracer: otel.Tracer("snmp-runner")}
 }
 
 func (r *Runner) Run(ctx context.Context, plan *maestro.Plan, action string, scope int, inputs map[string]any) (any, error) {
@@ -104,7 +110,7 @@ func (r *Runner) Run(ctx context.Context, plan *maestro.Plan, action string, sco
 		// Action determines SNMP operation
 		switch action {
 		case "GET":
-			vals, err := r.client.GetWithAlias(target)
+			vals, err := r.get(ctx, action, target)
 			if err != nil {
 				return nil, fmt.Errorf("snmp get failed: %w", err)
 			}
@@ -238,7 +244,7 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 
 		span.AddEvent(fmt.Sprintf("SNMP RunMany %s: %d OIDs → %s", action, len(entries), tk.ip))
 
-		snmpResults, err := r.client.GetWithAlias(target)
+		snmpResults, err := r.get(ctx, action, target)
 		if err != nil {
 			// Per-target failure: every invocation pinned to this target
 			// gets the same error so callers can attribute it.
@@ -282,6 +288,39 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 	}
 
 	return results, nil
+}
+
+// get wraps one GetWithAlias in an "SNMP Get" span so a slow or dead OLT shows
+// up as time in the trace, not only as an event on the caller's span.
+func (r *Runner) get(ctx context.Context, action string, target Target) (map[string]any, error) {
+	_, span := r.tracer.Start(ctx, "SNMP Get", trace.WithAttributes(
+		attribute.String("snmp.target", target.IP),
+		attribute.Int("snmp.oid_count", len(target.OIDs)),
+		attribute.String("snmp.action", action),
+	))
+	defer span.End()
+
+	vals, err := r.client.GetWithAlias(target)
+	if err != nil {
+		kind := "other"
+		if isTimeout(err) {
+			kind = "timeout"
+		}
+		span.SetAttributes(attribute.String("snmp.error_kind", kind))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return vals, err
+}
+
+// isTimeout reports a transport timeout. "request timeout" is gosnmp's wording
+// ("request timeout (after 1 retries)") and the phrase ES queries match on.
+func isTimeout(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return strings.Contains(err.Error(), "request timeout")
 }
 
 // extractTransport pulls the SNMP target identity (IP + community) from a
