@@ -26,6 +26,10 @@ func (e *goSNMPExecutor) Get(ip, community, oid string) (any, error) {
 }
 
 func (e *goSNMPExecutor) GetMultiple(ip, community string, oids []string) (map[string]any, error) {
+	return e.getMultiple(ip, community, oids, e.cfg.Retries)
+}
+
+func (e *goSNMPExecutor) getMultiple(ip, community string, oids []string, retries int) (map[string]any, error) {
 	if len(oids) == 0 {
 		return make(map[string]any), nil
 	}
@@ -36,7 +40,7 @@ func (e *goSNMPExecutor) GetMultiple(ip, community string, oids []string) (map[s
 		Community: community,
 		Version:   gosnmp.Version2c,
 		Timeout:   e.cfg.Timeout,
-		Retries:   e.cfg.Retries,
+		Retries:   retries,
 	}
 
 	if err := params.Connect(); err != nil {
@@ -81,7 +85,11 @@ func (e *goSNMPExecutor) GetWithAlias(target Target) (map[string]any, error) {
 		oids = append(oids, oid)
 	}
 
-	rawResults, err := e.GetMultiple(target.IP, target.Community, oids)
+	retries := e.cfg.Retries
+	if target.Retries != nil {
+		retries = *target.Retries
+	}
+	rawResults, err := e.getMultiple(target.IP, target.Community, oids, retries)
 	if err != nil {
 		return nil, err
 	}

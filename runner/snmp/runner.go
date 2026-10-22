@@ -293,18 +293,34 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 // get wraps one GetWithAlias in an "SNMP Get" span so a slow or dead OLT shows
 // up as time in the trace, not only as an event on the caller's span.
 func (r *Runner) get(ctx context.Context, action string, target Target) (map[string]any, error) {
+	mem := memoryFrom(ctx)
+	singleAttempt := mem != nil && mem.hasTimedOut(target)
+	if singleAttempt {
+		zero := 0
+		target.Retries = &zero
+		trace.SpanFromContext(ctx).AddEvent(fmt.Sprintf("SNMP %s: timed out earlier in this request — single attempt (retries 0)", target.IP))
+	}
+
 	_, span := r.tracer.Start(ctx, "SNMP Get", trace.WithAttributes(
 		attribute.String("snmp.target", target.IP),
 		attribute.Int("snmp.oid_count", len(target.OIDs)),
 		attribute.String("snmp.action", action),
 	))
 	defer span.End()
+	if singleAttempt {
+		span.SetAttributes(attribute.Int("snmp.retries_override", 0))
+	}
 
 	vals, err := r.client.GetWithAlias(target)
 	if err != nil {
 		kind := "other"
 		if isTimeout(err) {
 			kind = "timeout"
+			// Timeout only: noSuchInstance, device errors and the like say the
+			// agent is alive, so the next GET deserves its full retries.
+			if mem != nil {
+				mem.markTimedOut(target)
+			}
 		}
 		span.SetAttributes(attribute.String("snmp.error_kind", kind))
 		span.RecordError(err)

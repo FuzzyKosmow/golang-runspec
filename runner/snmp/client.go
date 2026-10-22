@@ -18,6 +18,7 @@ type Target struct {
 	IP        string
 	Community string
 	OIDs      map[string]string // alias → OID
+	Retries   *int              // nil = Config.Retries
 }
 
 // SetValue specifies an SNMP SET operation.
