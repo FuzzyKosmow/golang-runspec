@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/FuzzyKosmow/golang-runspec"
 	"github.com/FuzzyKosmow/golang-runspec/engine"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -403,7 +404,24 @@ func (r *Orchestrator) Run(ctx context.Context, action string, scope int, keys [
 		g.tasks[key] = task
 	}
 
+	stopOnDown := stopOnUnreachable(ctx)
 	for _, grp := range groups {
+		if stopOnDown {
+			// Run shares one inputs map across keys, so one runner here means one target.
+			if depKey, depErr := r.unreachableDep(grp.runner, planCache, failureCache); depErr != nil {
+				for key, task := range grp.tasks {
+					results[key] = Result{
+						Name: key, Status: StatusError,
+						Error: fmt.Sprintf("target unreachable: skipped after %s failed: %v", depKey, depErr),
+						Logs: task.Logs, GuardResults: task.Guards,
+					}
+				}
+				span.AddEvent(fmt.Sprintf("Execute: SKIPPED %d plans — %s unreachable (%s)",
+					len(grp.tasks), depKey, truncate(depErr.Error(), 80)))
+				continue
+			}
+		}
+
 		if grp.runner.SupportsBatch() {
 			invocations := make([]Invocation, 0, len(grp.tasks))
 			batchPlans := make(map[string]*maestro.Plan, len(grp.tasks))
@@ -548,6 +566,24 @@ func (r *Orchestrator) Run(ctx context.Context, action string, scope int, keys [
 		))
 
 	return results, nil
+}
+
+// unreachableDep returns the first failed dependency, by key, that runner rn
+// serves and that failed with ErrTargetUnreachable.
+func (r *Orchestrator) unreachableDep(rn Runner, planCache map[string]*maestro.Plan, failureCache map[string]error) (string, error) {
+	keys := make([]string, 0, len(failureCache))
+	for k := range failureCache {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		err := failureCache[k]
+		plan, ok := planCache[k]
+		if ok && errors.Is(err, ErrTargetUnreachable) && r.runnerForPlan(plan) == rn {
+			return k, err
+		}
+	}
+	return "", nil
 }
 
 // defaultActionForDeps returns the action to use when resolving dependencies.

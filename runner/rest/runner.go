@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/FuzzyKosmow/golang-runspec"
 	"github.com/FuzzyKosmow/golang-runspec/engine"
@@ -330,14 +331,7 @@ func (r *Runner) RunMany(ctx context.Context, action string, scope int, invocati
 				urlCache[url] = &cachedResponse{err: fmt.Errorf("transport %q vanished between phases", transport)}
 				continue
 			}
-			body, err := r.doHTTPGet(ctx, span, url, tc)
-			if err != nil && urlSecondary[url] != "" {
-				altURL := urlSecondary[url]
-				span.AddEvent("failover_to_secondary", trace.WithAttributes(
-					attribute.String("secondary.url", altURL),
-				))
-				body, err = r.doHTTPGet(ctx, span, altURL, tc)
-			}
+			body, err := r.getWithFailover(ctx, span, url, urlSecondary[url], tc)
 			urlCache[url] = &cachedResponse{body: body, err: err}
 		}
 
@@ -455,13 +449,11 @@ func (r *Runner) execRESTProperty(ctx context.Context, span trace.Span, plan *ma
 		attribute.String("rest.responseField", responseField),
 	)
 
-	// HTTP GET with failover
-	body, err := r.doHTTPGet(ctx, span, fullURL, tc)
-	if err != nil && secondary != "" {
-		altURL := secondary + urlPath
-		span.AddEvent("failover_to_secondary")
-		body, err = r.doHTTPGet(ctx, span, altURL, tc)
+	var secondaryURL string
+	if secondary != "" {
+		secondaryURL = secondary + urlPath
 	}
+	body, err := r.getWithFailover(ctx, span, fullURL, secondaryURL, tc)
 	if err != nil {
 		return nil, err
 	}
@@ -516,6 +508,42 @@ func (r *Runner) loadTransport(ctx context.Context, scope int, transportName str
 	return &tc, nil
 }
 
+// getWithFailover tries primary, then secondary when set. The error is marked
+// orchestrator.ErrTargetUnreachable only when every server failed before
+// answering and the caller's ctx is still live: any HTTP status means a server is up.
+func (r *Runner) getWithFailover(ctx context.Context, span trace.Span, primary, secondary string, tc *TransportConfig) (map[string]any, error) {
+	body, err := r.doHTTPGet(ctx, span, primary, tc)
+	if err == nil || secondary == "" {
+		return body, markUnreachable(ctx, err, err)
+	}
+	span.AddEvent("failover_to_secondary", trace.WithAttributes(
+		attribute.String("secondary.url", secondary),
+	))
+	primaryErr := err
+	body, err = r.doHTTPGet(ctx, span, secondary, tc)
+	return body, markUnreachable(ctx, err, primaryErr, err)
+}
+
+func markUnreachable(ctx context.Context, err error, attempts ...error) error {
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	for _, a := range attempts {
+		var te transportError
+		if !errors.As(a, &te) {
+			return err
+		}
+	}
+	return orchestrator.Unreachable(err)
+}
+
+// transportError is a request that got no HTTP response at all: timeout,
+// connection refused, DNS, TLS.
+type transportError struct{ err error }
+
+func (e transportError) Error() string { return e.err.Error() }
+func (e transportError) Unwrap() error { return e.err }
+
 // doHTTPGet performs a single HTTP GET with headers from transport config.
 //
 // The outgoing URL is set as a span attribute BEFORE dispatching so traces
@@ -548,7 +576,7 @@ func (r *Runner) doHTTPGet(ctx context.Context, span trace.Span, url string, tc 
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "request failed")
-		return nil, fmt.Errorf("rest: request failed: %w", err)
+		return nil, transportError{fmt.Errorf("rest: request failed: %w", err)}
 	}
 	defer resp.Body.Close()
 

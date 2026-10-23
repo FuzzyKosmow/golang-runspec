@@ -321,6 +321,7 @@ func (r *Runner) get(ctx context.Context, action string, target Target) (map[str
 			if mem != nil {
 				mem.markTimedOut(target)
 			}
+			err = orchestrator.Unreachable(err)
 		}
 		span.SetAttributes(attribute.String("snmp.error_kind", kind))
 		span.RecordError(err)
