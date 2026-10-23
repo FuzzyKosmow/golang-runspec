@@ -3,6 +3,7 @@ package snmp
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gosnmp/gosnmp"
 )
@@ -26,20 +27,40 @@ func (e *goSNMPExecutor) Get(ip, community, oid string) (any, error) {
 }
 
 func (e *goSNMPExecutor) GetMultiple(ip, community string, oids []string) (map[string]any, error) {
-	return e.getMultiple(ip, community, oids, e.cfg.Retries)
+	return e.getMultiple(ip, community, oids, nil)
 }
 
-func (e *goSNMPExecutor) getMultiple(ip, community string, oids []string, retries int) (map[string]any, error) {
+// settings resolves timeout and retries for one call. A per-target retries
+// override wins over both Live and the static config.
+func (e *goSNMPExecutor) settings(retriesOverride *int) (time.Duration, int) {
+	timeout, retries := e.cfg.Timeout, e.cfg.Retries
+	if e.cfg.Live != nil {
+		t, r := e.cfg.Live()
+		if t > 0 {
+			timeout = t
+		}
+		if r >= 0 {
+			retries = r
+		}
+	}
+	if retriesOverride != nil {
+		retries = *retriesOverride
+	}
+	return timeout, retries
+}
+
+func (e *goSNMPExecutor) getMultiple(ip, community string, oids []string, retriesOverride *int) (map[string]any, error) {
 	if len(oids) == 0 {
 		return make(map[string]any), nil
 	}
+	timeout, retries := e.settings(retriesOverride)
 
 	params := &gosnmp.GoSNMP{
 		Target:    ip,
 		Port:      161,
 		Community: community,
 		Version:   gosnmp.Version2c,
-		Timeout:   e.cfg.Timeout,
+		Timeout:   timeout,
 		Retries:   retries,
 	}
 
@@ -85,11 +106,7 @@ func (e *goSNMPExecutor) GetWithAlias(target Target) (map[string]any, error) {
 		oids = append(oids, oid)
 	}
 
-	retries := e.cfg.Retries
-	if target.Retries != nil {
-		retries = *target.Retries
-	}
-	rawResults, err := e.getMultiple(target.IP, target.Community, oids, retries)
+	rawResults, err := e.getMultiple(target.IP, target.Community, oids, target.Retries)
 	if err != nil {
 		return nil, err
 	}
@@ -116,13 +133,14 @@ func (e *goSNMPExecutor) GetWithAlias(target Target) (map[string]any, error) {
 }
 
 func (e *goSNMPExecutor) SetInteger(ip, community, oid string, value int) error {
+	timeout, retries := e.settings(nil)
 	params := &gosnmp.GoSNMP{
 		Target:    ip,
 		Port:      161,
 		Community: community,
 		Version:   gosnmp.Version2c,
-		Timeout:   e.cfg.Timeout,
-		Retries:   e.cfg.Retries,
+		Timeout:   timeout,
+		Retries:   retries,
 	}
 
 	if err := params.Connect(); err != nil {
@@ -145,13 +163,14 @@ func (e *goSNMPExecutor) SetMultiple(ip, community string, values []SetValue) er
 		return nil
 	}
 
+	timeout, retries := e.settings(nil)
 	params := &gosnmp.GoSNMP{
 		Target:    ip,
 		Port:      161,
 		Community: community,
 		Version:   gosnmp.Version2c,
-		Timeout:   e.cfg.Timeout,
-		Retries:   e.cfg.Retries,
+		Timeout:   timeout,
+		Retries:   retries,
 	}
 
 	if err := params.Connect(); err != nil {

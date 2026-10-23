@@ -32,4 +32,7 @@ type SetValue struct {
 type Config struct {
 	Timeout time.Duration
 	Retries int
+	// Live, when set, is read on every call so a config reload applies without
+	// a restart. Timeout <= 0 or retries < 0 fall back to the static fields.
+	Live func() (time.Duration, int)
 }
